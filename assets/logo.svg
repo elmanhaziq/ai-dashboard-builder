@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="210" height="32" viewBox="0 0 210 32">
+  <rect x="0" y="4" width="24" height="24" rx="6" fill="#1f5fbf"/>
+  <rect x="6" y="15" width="3" height="7" rx="1" fill="#fff"/>
+  <rect x="10.5" y="11" width="3" height="11" rx="1" fill="#fff"/>
+  <rect x="15" y="8" width="3" height="14" rx="1" fill="#fff"/>
+  <text x="34" y="21.5" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="600" fill="#1c1f24">Dashboard Builder</text>
+</svg>

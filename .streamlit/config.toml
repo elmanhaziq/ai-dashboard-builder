@@ -1,0 +1,23 @@
+[server]
+# Keep in sync with DASHBOARD_MAX_UPLOAD_MB in .env (the app also enforces its own limit).
+maxUploadSize = 50
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1f5fbf"
+backgroundColor = "#f6f7f9"
+secondaryBackgroundColor = "#eef0f3"
+textColor = "#1c1f24"
+borderColor = "#e3e6ea"
+baseRadius = "8px"
+font = "sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#ffffff"
