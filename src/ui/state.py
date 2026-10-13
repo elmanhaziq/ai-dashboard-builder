@@ -2,37 +2,66 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
 
 import pandas as pd
 import streamlit as st
 
+from .. import config
 from ..chart_generator import ChartConfigError
 from ..dashboard_service import build_default_dashboard, validate_dashboard_config
 from ..data_loader import DataLoadError, LoadResult, load_dataset, read_raw
 from ..data_profiler import DatasetProfile, apply_overrides, profile_dataset
-from ..storage import Storage, StorageError
+from ..storage import Storage, StorageError, session_storage, sweep_sessions
 
 
 @st.cache_resource
-def get_storage() -> Storage:
+def _local_storage() -> Storage:
     return Storage()
 
 
+_last_sweep = {"t": 0.0}
+
+
+def get_storage() -> Storage:
+    """Local mode: the shared project folders. Online mode: a private temporary folder per browser session."""
+    if not config.ONLINE:
+        return _local_storage()
+    sid = st.session_state.get("_session_id")
+    if not sid:
+        sid = st.session_state["_session_id"] = uuid.uuid4().hex
+    if time.time() - _last_sweep["t"] > 600:  # remove other visitors' expired sessions, at most every 10 minutes
+        _last_sweep["t"] = time.time()
+        sweep_sessions(config.SESSION_ROOT, config.SESSION_TTL_MINUTES)
+    return session_storage(config.SESSION_ROOT, sid)
+
+
+# Cached loads are keyed by the file's full path (which includes the private session folder online) and its hash,
+# so a cached result can never be served to a different visitor.
 @st.cache_data(show_spinner=False, max_entries=6)
-def load_cached(dataset_id: str, sheet: str | None, header_row: int | None, sha: str) -> tuple[LoadResult, DatasetProfile]:
-    """Load + profile a stored dataset. ``sha`` keys the cache to the file contents."""
-    storage = get_storage()
-    meta = storage.get_dataset(dataset_id)
-    result = load_dataset(storage.dataset_file(dataset_id), meta["ext"], sheet, header_row)
+def _load_file(path: str, ext: str, sheet: str | None, header_row: int | None, sha: str) -> tuple[LoadResult, DatasetProfile]:
+    result = load_dataset(path, ext, sheet, header_row)
     profile = profile_dataset(result.df, result.percent_columns, result.currency_columns)
     return result, profile
 
 
-@st.cache_data(show_spinner=False, max_entries=4)
+def load_cached(dataset_id: str, sheet: str | None, header_row: int | None, sha: str) -> tuple[LoadResult, DatasetProfile]:
+    """Load + profile a stored dataset."""
+    storage = get_storage()
+    meta = storage.get_dataset(dataset_id)
+    return _load_file(str(storage.dataset_file(dataset_id)), meta["ext"], sheet, header_row, sha)
+
+
 def raw_preview(dataset_id: str, sheet: str | None, sha: str, rows: int = 200) -> pd.DataFrame:
     storage = get_storage()
     meta = storage.get_dataset(dataset_id)
-    raw, _, _ = read_raw(storage.dataset_file(dataset_id), meta["ext"], sheet)
+    return _raw_preview(str(storage.dataset_file(dataset_id)), meta["ext"], sheet, sha, rows)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _raw_preview(path: str, ext: str, sheet: str | None, sha: str, rows: int) -> pd.DataFrame:
+    raw, _, _ = read_raw(path, ext, sheet)
     preview = raw.head(rows).astype(object)
     # Show cells exactly as text so mixed-type columns display faithfully.
     preview = preview.map(lambda v: "" if v is None or (isinstance(v, float) and v != v) else str(v))

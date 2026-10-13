@@ -8,6 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 from ..chart_renderer import ChartDataError, _style, build_figure, prepare_chart_data
+from .. import config
 from ..config import SERIES_COLORS
 from ..dashboard_service import (
     MAX_FILTER_OPTIONS, apply_filters, compute_kpi, filter_candidates, filter_options, regenerate,
@@ -55,7 +56,7 @@ def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, n_filtered: i
         if b1.button("Save", type="primary", icon=":material/save:", width="stretch"):
             try:
                 state.save_current()
-                st.toast("Dashboard saved locally.", icon=":material/check_circle:")
+                st.toast("Dashboard saved for this session. Download it from My Dashboards to keep it." if config.ONLINE else "Dashboard saved locally.", icon=":material/check_circle:")
                 st.rerun()
             except StorageError as exc:
                 st.error(str(exc))
@@ -74,6 +75,17 @@ def _manage_menu(cfg: dict, profile: DatasetProfile) -> None:
             state.save_current()
             st.rerun()
     st.divider()
+    if st.button("Download dashboard (.zip)", key="mm_dl_prep", width="stretch", icon=":material/download:",
+                 help="Saves your changes, then packages the settings and the data file so you can import them later."):
+        state.save_current()
+        st.session_state["mm_dl_ready"] = cfg["id"]
+    if st.session_state.get("mm_dl_ready") == cfg["id"]:
+        try:
+            fname, blob = state.get_storage().export_bundle(cfg["id"])
+            st.download_button("Save file", blob, file_name=fname, mime="application/zip", key="mm_dl",
+                               type="primary", width="stretch")
+        except StorageError as exc:
+            st.error(str(exc))
     if st.button("Duplicate", key="mm_dup", width="stretch", icon=":material/content_copy:"):
         state.save_current()
         copy = state.get_storage().duplicate_dashboard(cfg["id"])
@@ -279,7 +291,7 @@ def _qa_figure(chart: dict, table: pd.DataFrame):
 
 def _render_qa(df: pd.DataFrame, profile: DatasetProfile, filtered: bool) -> None:
     st.markdown("### Ask a question")
-    st.caption("Answers are calculated with pandas on the " + ("filtered" if filtered else "full") + " data. Nothing is sent off this computer.")
+    st.caption("Answers are calculated with pandas on the " + ("filtered" if filtered else "full") + " data. No AI service receives your data.")
     sugg = suggested_questions(profile)
     picked = st.pills("Suggestions", sugg, key="qa_pill", label_visibility="collapsed")
     with st.form("qa_form", clear_on_submit=True, border=False):

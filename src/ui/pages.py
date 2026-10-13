@@ -25,13 +25,33 @@ def overview_page() -> None:
         render_landing()
 
 
+def _import_bundle_box(storage) -> None:
+    with st.expander("Import a dashboard file (.dashboard.zip)", icon=":material/upload:",
+                     expanded=config.ONLINE and not storage.list_dashboards()):
+        st.caption("Restore a dashboard you downloaded earlier. It includes the settings and the original data file.")
+        up = st.file_uploader("Dashboard file", type=["zip"], key="bundle_upload", label_visibility="collapsed")
+        if up is not None and st.session_state.get("bundle_done") != up.file_id:
+            st.session_state["bundle_done"] = up.file_id
+            try:
+                cfg = storage.import_bundle(up.getvalue())
+                state.open_dashboard(cfg["id"])
+            except (StorageError, DataLoadError) as exc:
+                st.error(str(exc))
+                return
+            st.switch_page(st.session_state["_pages"]["overview"])
+
+
 def dashboards_page() -> None:
-    page_header("Library", "My dashboards", "Dashboards are saved as JSON configuration files on this computer.")
+    subtitle = ("Dashboards for this browser session only. Download them to keep them; they are deleted after "
+                f"{config.SESSION_TTL_MINUTES // 60} hours of inactivity." if config.ONLINE
+                else "Dashboards are saved as JSON configuration files on this computer.")
+    page_header("Library", "My dashboards", subtitle)
     st.write("")
     storage = state.get_storage()
+    _import_bundle_box(storage)
     items = storage.list_dashboards()
     if not items:
-        empty_state("No saved dashboards", "Go to Overview and upload a spreadsheet to create one.")
+        empty_state("No saved dashboards", "Go to Overview and upload a spreadsheet to create one, or import a dashboard file.")
         return
     query = st.text_input("Search", placeholder="Filter by name or file", label_visibility="collapsed")
     if query:
@@ -55,7 +75,7 @@ def dashboards_page() -> None:
                 st.caption(f"{d.get('dataset_name') or 'Dataset'}{sheet} · {d['n_kpis']} KPIs · {d['n_charts']} charts · "
                            f"updated {str(d.get('updated_at') or '')[:16].replace('T', ' ')} UTC")
             with c2:
-                b1, b2, b3, b4 = st.columns(4)
+                b1, b5, b2, b3, b4 = st.columns(5)
                 if b1.button("Open", key=f"open_{d['id']}", type="primary", width="stretch"):
                     try:
                         state.open_dashboard(d["id"])
@@ -63,6 +83,17 @@ def dashboards_page() -> None:
                         st.error(str(exc))
                     else:
                         st.switch_page(st.session_state["_pages"]["overview"])
+                with b5.popover("Save", icon=":material/download:", width="stretch", help="Download as a file you can import later"):
+                    st.caption("Downloads the settings and the original data file as one .zip.")
+                    if st.button("Prepare download", key=f"dl_prep_{d['id']}", width="stretch"):
+                        st.session_state[f"dl_ready_{d['id']}"] = True
+                    if st.session_state.get(f"dl_ready_{d['id']}"):
+                        try:
+                            fname, blob = storage.export_bundle(d["id"])
+                            st.download_button("Download .zip", blob, file_name=fname, mime="application/zip",
+                                               key=f"dl_{d['id']}", type="primary", width="stretch")
+                        except StorageError as exc:
+                            st.error(str(exc))
                 with b2.popover("Rename", width="stretch"):
                     name = st.text_input("New name", value=d["name"], key=f"rn_{d['id']}", max_chars=120)
                     if st.button("Save name", key=f"rn_btn_{d['id']}"):
@@ -181,19 +212,33 @@ def explorer_page() -> None:
 
 
 def settings_page() -> None:
-    page_header("Workspace", "Settings", "Local storage, limits and privacy.")
+    page_header("Workspace", "Settings", "Storage, limits and privacy.")
     st.write("")
     storage = state.get_storage()
     with card("settings_storage"):
         st.markdown("### Storage")
-        st.markdown(
-            f"- Uploaded files: `{esc(storage.upload_dir)}`\n"
-            f"- Dashboard configurations: `{esc(storage.dashboard_dir)}`\n"
-            f"- Space used by uploads: **{human_size(storage.disk_usage())}**\n"
-            f"- Upload limit: **{config.MAX_UPLOAD_MB} MB** · row limit: **{config.MAX_ROWS:,}** (change in `.env`)"
-        )
-        st.caption("Files are stored unencrypted on this computer and are not uploaded anywhere. Deleting removes the files "
-                   "with normal file deletion; it is not a secure wipe.")
+        if config.ONLINE:
+            st.markdown(
+                "- This is the **online version**. Files you upload are sent to and processed on this app's server.\n"
+                "- Your files and dashboards are kept in a temporary folder that **only your browser session** can use. "
+                "Other visitors can't see them.\n"
+                f"- They are deleted after **{config.SESSION_TTL_MINUTES // 60} hours of inactivity**, whenever the server "
+                "restarts, or when you use *Delete my data now* below. Download a dashboard (My Dashboards → Save) to keep it.\n"
+                f"- Space used by your uploads: **{human_size(storage.disk_usage())}**\n"
+                f"- Upload limit: **{config.MAX_UPLOAD_MB} MB** · row limit: **{config.MAX_ROWS:,}**"
+            )
+            st.caption("Files are stored unencrypted on the server while your session lasts, and deletion is normal file "
+                       "deletion, not a secure wipe. Don't upload confidential or personal data to the online version; "
+                       "run the app on your own computer for that.")
+        else:
+            st.markdown(
+                f"- Uploaded files: `{esc(storage.upload_dir)}`\n"
+                f"- Dashboard configurations: `{esc(storage.dashboard_dir)}`\n"
+                f"- Space used by uploads: **{human_size(storage.disk_usage())}**\n"
+                f"- Upload limit: **{config.MAX_UPLOAD_MB} MB** · row limit: **{config.MAX_ROWS:,}** (change in `.env`)"
+            )
+            st.caption("Files are stored unencrypted on this computer and are not uploaded anywhere. Deleting removes the files "
+                       "with normal file deletion; it is not a secure wipe.")
 
     with card("settings_datasets"):
         st.markdown("### Uploaded datasets")
@@ -217,10 +262,11 @@ def settings_page() -> None:
                     st.rerun()
 
     with card("settings_clear"):
-        st.markdown("### Clear all local data")
-        st.caption("Removes every uploaded file and every saved dashboard from this computer.")
+        st.markdown("### Delete my data now" if config.ONLINE else "### Clear all local data")
+        st.caption("Removes every file you uploaded and every dashboard you saved in this session from the server."
+                   if config.ONLINE else "Removes every uploaded file and every saved dashboard from this computer.")
         ok = st.checkbox("I understand this cannot be undone")
-        if st.button("Clear everything", disabled=not ok, icon=":material/delete_forever:"):
+        if st.button("Delete my data" if config.ONLINE else "Clear everything", disabled=not ok, icon=":material/delete_forever:"):
             n_ds, n_db = storage.clear_all()
             state.close_dashboard()
             st.cache_data.clear()
@@ -229,8 +275,8 @@ def settings_page() -> None:
     with card("settings_ai"):
         st.markdown("### AI features")
         st.markdown(
-            "Insights and answers come from a **local, rule-based engine**: every number is calculated with pandas "
-            "on your data and no data leaves this computer. No API key is needed.\n\n"
+            "Insights and answers come from a **rule-based engine** built into the app: every number is calculated "
+            "with pandas on your data, and no AI service receives it. No API key is needed.\n\n"
             "The query engine turns a question into a structured plan before calculating anything, so an optional "
             "LLM could later interpret questions while pandas still does all the maths. No external AI provider "
             "is configured in this version."

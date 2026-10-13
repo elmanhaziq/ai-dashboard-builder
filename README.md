@@ -58,7 +58,7 @@ the **Overview** page.
 .venv\Scripts\python.exe -m pytest
 ```
 
-The 109 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
+The 119 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
 header detection, cleaning, profiling, type inference, KPI calculations, chart recommendations, filtering and
 aggregation, natural-language questions, saving and loading dashboards, and invalid input handling.
 
@@ -134,6 +134,27 @@ rmdir /s /q uploads saved_dashboards
 mkdir uploads saved_dashboards
 ```
 
+## Online version (Streamlit Community Cloud)
+
+The same code runs as a shared web app. On Streamlit Community Cloud the app switches to **online mode**
+automatically; anywhere else, set `DASHBOARD_MODE=online`. Online mode changes how data is handled:
+
+| | Local mode (your computer) | Online mode (web) |
+|---|---|---|
+| Where files are processed | This computer | The app's server |
+| Who can see uploads and dashboards | You | Only the visitor's own browser session |
+| How long they're kept | Until you delete them | Deleted after 2 hours of inactivity, when the server restarts, or via *Delete my data now* |
+| Keeping your work | Saved automatically to `saved_dashboards/` | **My Dashboards → Save** downloads a `.dashboard.zip` (settings plus the original file); **Import** restores it |
+| Upload / row limits | 50 MB / 1,000,000 rows | 20 MB / 300,000 rows |
+
+In online mode, server folder paths are never shown, and the app tells visitors not to upload confidential
+data. Imported `.dashboard.zip` files are treated as untrusted: only the expected entries are read, sizes are
+checked before decompressing, and the settings are validated like any saved dashboard.
+
+**To deploy your own copy:** sign in at [share.streamlit.io](https://share.streamlit.io) with GitHub, choose
+**Create app → Deploy a public app from GitHub**, then pick this repository, branch `main`, main file `app.py`,
+and Python 3.13 under *Advanced settings*. Optionally add `DASHBOARD_MODE = "online"` to Secrets as well.
+
 ## Configuration
 
 Copy `.env.example` to `.env` to change any of these settings:
@@ -142,7 +163,9 @@ Copy `.env.example` to `.env` to change any of these settings:
 |---|---|---|
 | `DASHBOARD_MAX_UPLOAD_MB` | 50 | Upload size limit. Also update `maxUploadSize` in `.streamlit/config.toml`. |
 | `DASHBOARD_MAX_ROWS` | 1,000,000 | Rows loaded per sheet. Any extra rows are skipped with a warning. |
-| `DASHBOARD_DATA_DIR` | project folder | Where `uploads/` and `saved_dashboards/` live. |
+| `DASHBOARD_DATA_DIR` | project folder | Where `uploads/` and `saved_dashboards/` live (local mode). |
+| `DASHBOARD_MODE` | auto | `local` or `online`. Auto-detects Streamlit Community Cloud. |
+| `DASHBOARD_SESSION_TTL_MINUTES` | 120 | Online mode: minutes of inactivity before a visitor's files are deleted. |
 
 ## Adding an LLM later
 

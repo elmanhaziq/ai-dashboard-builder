@@ -12,12 +12,15 @@ Files are stored unencrypted on the local disk. Deletion uses normal file remova
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -246,3 +249,96 @@ class Storage:
 
     def disk_usage(self) -> int:
         return sum(p.stat().st_size for p in self.upload_dir.rglob("*") if p.is_file())
+
+    # ------------------------------------------------------------------ portable bundles
+    def export_bundle(self, dashboard_id: str) -> tuple[str, bytes]:
+        """A .zip holding the dashboard settings and its original data file, for download."""
+        cfg = self.load_dashboard(dashboard_id)
+        meta = self.get_dataset(cfg["dataset_id"])
+        data = self.dataset_file(cfg["dataset_id"]).read_bytes()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(BUNDLE_CONFIG, json.dumps(cfg, indent=2, default=str))
+            zf.writestr(BUNDLE_META, json.dumps({"original_name": meta["original_name"], "format": BUNDLE_FORMAT}, indent=2))
+            zf.writestr(f"data/original{meta['ext']}", data)
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", cfg["name"]).strip("_")[:60] or "dashboard"
+        return f"{stem}.dashboard.zip", buf.getvalue()
+
+    def import_bundle(self, blob: bytes, max_bytes: int | None = None) -> dict:
+        """Restore a dashboard exported with :meth:`export_bundle`. Returns the saved config.
+
+        The archive is treated as untrusted: only the three expected entries are read, sizes are capped
+        before decompression, and the configuration is validated like any other saved dashboard.
+        """
+        from .data_loader import DataLoadError, _detect_format, list_sheets
+
+        limit = max_bytes or config.MAX_UPLOAD_BYTES
+        if len(blob) > limit:
+            raise StorageError("The dashboard file is larger than the upload limit.")
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(blob))
+        except zipfile.BadZipFile as exc:
+            raise StorageError("This isn't a dashboard file (.dashboard.zip) exported from this app.") from exc
+        with zf:
+            infos = {i.filename: i for i in zf.infolist()}
+            data_names = [n for n in infos if re.fullmatch(r"data/original\.(xlsx|xls|csv)", n)]
+            if BUNDLE_CONFIG not in infos or BUNDLE_META not in infos or len(data_names) != 1:
+                raise StorageError("This isn't a dashboard file (.dashboard.zip) exported from this app.")
+            for name in (BUNDLE_CONFIG, BUNDLE_META, data_names[0]):
+                if infos[name].file_size > limit:
+                    raise StorageError("The data inside this dashboard file is larger than the upload limit.")
+            try:
+                raw_cfg = json.loads(zf.read(BUNDLE_CONFIG).decode("utf-8"))
+                meta = json.loads(zf.read(BUNDLE_META).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise StorageError("The dashboard file is damaged.") from exc
+            data = zf.read(data_names[0])
+        ext = "." + data_names[0].rsplit(".", 1)[1]
+        try:
+            cfg, _ = validate_dashboard_config(raw_cfg)
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"The dashboard settings are invalid: {exc}") from exc
+        try:
+            if _detect_format(data, ext) != ext:  # bundles we export always match; anything else was tampered with
+                raise DataLoadError("its contents don't match its file type.")
+            list_sheets(data, ext)
+        except DataLoadError as exc:
+            raise StorageError(f"The data inside the dashboard file can't be read: {exc}") from exc
+        name = meta.get("original_name") if isinstance(meta, dict) else None
+        dataset = self.save_upload(str(name or f"data{ext}"), data, ext)
+        cfg.update(id=new_dashboard_id(), dataset_id=dataset["id"], dataset_name=dataset["original_name"], created_at=now_iso())
+        return self.save_dashboard(cfg)
+
+
+BUNDLE_CONFIG = "dashboard.json"
+BUNDLE_META = "data/meta.json"
+BUNDLE_FORMAT = "ai-dashboard-builder/1"
+
+_SESSION_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+def session_storage(root: Path, session_id: str) -> Storage:
+    """Private storage for one browser session (online mode)."""
+    if not _SESSION_RE.match(session_id):
+        raise StorageError("Invalid session.")
+    base = Path(root) / session_id
+    base.mkdir(parents=True, exist_ok=True)
+    os.utime(base)  # mark activity for the inactivity sweep
+    return Storage(base / "uploads", base / "saved_dashboards")
+
+
+def sweep_sessions(root: Path, ttl_minutes: int, now: float | None = None) -> int:
+    """Delete session folders inactive for longer than ``ttl_minutes``. Returns the number removed."""
+    root = Path(root)
+    if not root.is_dir():
+        return 0
+    cutoff = (now if now is not None else time.time()) - ttl_minutes * 60
+    removed = 0
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and _SESSION_RE.match(child.name) and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed

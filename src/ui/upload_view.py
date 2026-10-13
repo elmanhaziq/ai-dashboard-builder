@@ -10,12 +10,15 @@ from . import state
 from .theme import card, chips, date_column_config, empty_state, esc, human_size, page_header
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
 def _sheets(dataset_id: str, sha: str) -> tuple[list[str], dict]:
     storage = state.get_storage()
     meta = storage.get_dataset(dataset_id)
-    path = storage.dataset_file(dataset_id)
-    return list_sheets(path, meta["ext"]), sheet_dimensions(path, meta["ext"])
+    return _sheets_for(str(storage.dataset_file(dataset_id)), meta["ext"], sha)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _sheets_for(path: str, ext: str, sha: str) -> tuple[list[str], dict]:
+    return list_sheets(path, ext), sheet_dimensions(path, ext)
 
 
 def _handle_upload(uploaded) -> None:
@@ -37,6 +40,8 @@ def _handle_upload(uploaded) -> None:
 
 def render_landing() -> None:
     page_header("Overview", "Build a dashboard from a spreadsheet",
+                "Upload an Excel workbook or CSV. It's analysed on this server and kept only for your session — "
+                "please don't upload confidential data." if config.ONLINE else
                 "Upload an Excel workbook or CSV. The file is analysed and stored locally on this computer.")
     st.write("")
     uploaded = st.file_uploader(

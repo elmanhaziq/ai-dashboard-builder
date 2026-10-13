@@ -1,7 +1,9 @@
-streamlit>=1.40
-pandas>=2.2
-numpy>=1.26
-plotly>=5.24
-openpyxl>=3.1
-xlrd>=2.0.1
-pytest>=8.0
+# Exact versions the app and its tests were verified with (Python 3.13).
+streamlit==1.65.0
+pandas==3.0.6
+numpy==2.5.3
+plotly==7.1.0
+openpyxl==3.1.5
+xlrd==2.0.2
+pyarrow==25.0.1
+pytest==9.1.1

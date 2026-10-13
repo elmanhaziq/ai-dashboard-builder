@@ -37,11 +37,21 @@ _pages = {
 st.session_state["_pages"] = _pages
 nav = st.navigation(list(_pages.values()), position="sidebar")
 
+from src import config  # noqa: E402
+
 with st.sidebar:
-    st.markdown(
-        '<div class="privacy">Local mode: files and dashboards are stored on this computer only. '
-        "No data is sent to external services.</div>",
-        unsafe_allow_html=True,
-    )
+    if config.ONLINE:
+        st.markdown(
+            '<div class="privacy"><b>Online version.</b> Your uploads are processed on this server, visible only to your '
+            f"browser session, and deleted after {config.SESSION_TTL_MINUTES // 60} hours of inactivity. "
+            "Don't upload confidential data. Download dashboards to keep them.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="privacy">Local mode: files and dashboards are stored on this computer only. '
+            "No data is sent to external services.</div>",
+            unsafe_allow_html=True,
+        )
 
 nav.run()
