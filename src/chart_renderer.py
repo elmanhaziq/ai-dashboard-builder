@@ -322,7 +322,8 @@ def _label_last_points(fig: go.Figure, vfmt: str) -> None:
                            xanchor="left", xshift=6, font=dict(size=11, color=INK_2))
 
 
-def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height: int = 340) -> go.Figure:
+def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height: int = 340,
+                 highlight: list[str] | None = None) -> go.Figure:
     t, x, y, color, agg = spec["type"], spec.get("x"), spec.get("y"), spec.get("color"), spec.get("agg", "sum")
     multi = bool(spec.get("extra")) and SERIES in data.columns
     legend_col = SERIES if multi else color
@@ -389,6 +390,11 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
             fig.update_yaxes(title_text=value_title)
         fig = _style(fig, height, bool(legend_col))
         fig.update_layout(bargap=gap)
+        if highlight:
+            wanted = {str(v) for v in highlight}
+            for tr in fig.data:  # selected categories stay solid, the rest fade (Power BI-style highlight)
+                cats = tr.y if horizontal else tr.x
+                tr.marker.opacity = [1.0 if str(c) in wanted else 0.25 for c in cats]
         return fig
 
     if t == "heatmap":

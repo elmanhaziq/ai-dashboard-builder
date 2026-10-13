@@ -1,6 +1,7 @@
 """The interactive dashboard: header actions, filters, KPIs, charts, insights and Q&A."""
 from __future__ import annotations
 
+import re
 from datetime import date
 
 import pandas as pd
@@ -17,6 +18,7 @@ from ..data_loader import DataLoadError
 from ..data_profiler import DATE, DIMENSION, DatasetProfile
 from ..formatting import format_value
 from ..insights import generate_insights
+from ..report_export import build_html_report
 from ..query_engine import answer_question, suggested_questions
 from ..storage import StorageError
 from . import state
@@ -36,7 +38,8 @@ def _fkey(did: str, col: str) -> str:
 
 # --------------------------------------------------------------------------- header
 
-def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, n_filtered: int) -> None:
+def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, filtered: pd.DataFrame) -> None:
+    n_filtered = len(filtered)
     left, right = st.columns([5, 4], vertical_alignment="bottom")
     with left:
         st.markdown('<div class="page-eyebrow">Dashboard</div>', unsafe_allow_html=True)
@@ -61,13 +64,13 @@ def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, n_filtered: i
             except StorageError as exc:
                 st.error(str(exc))
         with b2.popover("Manage", icon=":material/more_horiz:", width="stretch"):
-            _manage_menu(cfg, profile)
+            _manage_menu(cfg, profile, filtered)
         if b3.button("New dataset", icon=":material/upload_file:", width="stretch"):
             state.close_dashboard()
             st.rerun()
 
 
-def _manage_menu(cfg: dict, profile: DatasetProfile) -> None:
+def _manage_menu(cfg: dict, profile: DatasetProfile, filtered: pd.DataFrame) -> None:
     new_name = st.text_input("Dashboard name", value=cfg["name"], max_chars=120, key=f"rename_{cfg['id']}")
     if st.button("Rename", key="mm_rename", width="stretch", icon=":material/edit:"):
         if new_name.strip():
@@ -75,7 +78,7 @@ def _manage_menu(cfg: dict, profile: DatasetProfile) -> None:
             state.save_current()
             st.rerun()
     st.divider()
-    if st.button("Download dashboard (.zip)", key="mm_dl_prep", width="stretch", icon=":material/download:",
+    if st.button("Download to edit later (.zip)", key="mm_dl_prep", width="stretch", icon=":material/download:",
                  help="Saves your changes, then packages the settings and the data file so you can import them later."):
         state.save_current()
         st.session_state["mm_dl_ready"] = cfg["id"]
@@ -86,6 +89,14 @@ def _manage_menu(cfg: dict, profile: DatasetProfile) -> None:
                                type="primary", width="stretch")
         except StorageError as exc:
             st.error(str(exc))
+    if st.button("Download as web page (.html)", key="mm_html_prep", width="stretch", icon=":material/language:",
+                 help="One file that opens in any browser, offline, with no setup. A snapshot using the current filters."):
+        st.session_state["mm_html_ready"] = cfg["id"]
+    if st.session_state.get("mm_html_ready") == cfg["id"]:
+        html_doc = build_html_report(cfg, filtered, profile, profile.n_rows)
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", cfg["name"]).strip("_")[:60] or "dashboard"
+        st.download_button("Save web page", html_doc.encode("utf-8"), file_name=f"{stem}.html", mime="text/html",
+                           key="mm_html", type="primary", width="stretch")
     if st.button("Duplicate", key="mm_dup", width="stretch", icon=":material/content_copy:"):
         state.save_current()
         copy = state.get_storage().duplicate_dashboard(cfg["id"])
@@ -189,17 +200,33 @@ def _cross_filter(chart_key: str, spec: dict, did: str) -> None:
         points = event["selection"]["points"]
     except (KeyError, TypeError):
         return
-    if not points:
-        return
-    horizontal = spec["type"] == "hbar"
-    values = sorted({str(p.get("y") if horizontal else p.get("x")) for p in points if (p.get("y") if horizontal else p.get("x")) is not None})
-    if not values:
-        return
     cfg = st.session_state["dashboard"]
     col = spec["x"]
+    key = _fkey(did, col)
+    current = sorted(st.session_state.get(key) or [])
+    horizontal = spec["type"] == "hbar"
+    values = sorted({str(p.get("y") if horizontal else p.get("x")) for p in points
+                     if (p.get("y") if horizontal else p.get("x")) is not None})
+    if not values or values == current:
+        # Clicking empty space, double-clicking, or clicking the selected bar again clears the selection.
+        _clear_selection(did, col)
+        return
     if col not in cfg["filter_columns"]:
         cfg["filter_columns"] = (cfg["filter_columns"] + [col])[-6:]
-    st.session_state[_fkey(did, col)] = values
+    st.session_state[key] = values
+
+
+def _clear_selection(did: str, col: str) -> None:
+    st.session_state[_fkey(did, col)] = []
+    # A new chart key also resets Plotly's own selection state on the clicked chart.
+    st.session_state["select_epoch"] = st.session_state.get("select_epoch", 0) + 1
+
+
+def _clear_all_filters(did: str) -> None:
+    _reset_filter_widgets(did)
+    st.session_state["dashboard"]["filters"] = {"categorical": {}, "date": {}}
+    st.session_state["filters_initialised_for"] = None
+    st.session_state["select_epoch"] = st.session_state.get("select_epoch", 0) + 1
 
 
 # --------------------------------------------------------------------------- charts
@@ -209,7 +236,8 @@ def _open_builder(chart_id: str | None, data: pd.DataFrame, profile: DatasetProf
     builder_dialog(data, profile)
 
 
-def _render_chart(spec: dict, data: pd.DataFrame, profile: DatasetProfile, did: str) -> None:
+def _render_chart(spec: dict, data: pd.DataFrame, profile: DatasetProfile, did: str,
+                  highlight: list[str] | None = None) -> None:
     with card(f"chart_{spec['id']}"):
         head, tools = st.columns([7, 1], vertical_alignment="top")
         with head:
@@ -235,18 +263,29 @@ def _render_chart(spec: dict, data: pd.DataFrame, profile: DatasetProfile, did: 
             col_cfg = {c: st.column_config.NumberColumn(c, format="localized") for c in agg.columns if pd.api.types.is_numeric_dtype(agg[c])}
             st.dataframe(agg, width="stretch", hide_index=True, column_config=col_cfg, height=min(420, 38 + 35 * len(agg)))
         else:
-            fig = build_figure(agg, spec, profile)
-            key = f"chart_{did}_{spec['id']}"
-            clickable = spec["type"] in ("bar", "hbar") and profile.columns[spec["x"]].role == DIMENSION \
-                and profile.columns[spec["x"]].unique <= MAX_FILTER_OPTIONS
-            if clickable:
+            fig = build_figure(agg, spec, profile, highlight=highlight)
+            key = f"chart_{did}_{spec['id']}_{st.session_state.get('select_epoch', 0)}"
+            if _clickable(spec, profile):
                 st.plotly_chart(fig, key=key, width="stretch", config=PLOTLY_CONFIG, on_select=lambda: _cross_filter(key, spec, did),
                                 selection_mode="points")
-                notes = notes + ["Click a bar to filter the dashboard."]
+                if highlight:
+                    c1, c2 = st.columns([3, 2], vertical_alignment="center")
+                    shown = ", ".join(highlight[:3]) + ("…" if len(highlight) > 3 else "")
+                    c1.markdown(f'<div class="chart-note">Filtering the dashboard by {esc(spec["x"])} = {esc(shown)}. '
+                                "Click the bar again to undo.</div>", unsafe_allow_html=True)
+                    c2.button(f"Show all {spec['x']}"[:40], key=f"clr_{spec['id']}", icon=":material/close:",
+                              on_click=_clear_selection, args=(did, spec["x"]), width="stretch")
+                else:
+                    notes = notes + ["Click a bar to filter the dashboard."]
             else:
                 st.plotly_chart(fig, key=key, width="stretch", config=PLOTLY_CONFIG)
         if notes:
             st.markdown(f'<div class="chart-note">{esc(" ".join(notes))}</div>', unsafe_allow_html=True)
+
+
+def _clickable(spec: dict, profile: DatasetProfile) -> bool:
+    cp = profile.columns.get(spec.get("x") or "")
+    return spec["type"] in ("bar", "hbar") and cp is not None and cp.role == DIMENSION and cp.unique <= MAX_FILTER_OPTIONS
 
 
 def _layout_rows(charts: list[dict]) -> list[list[dict]]:
@@ -346,7 +385,7 @@ def render_dashboard(cfg: dict) -> None:
 
     filtered = _render_filters(cfg, df, profile)
     with filtered_header_placeholder:
-        _render_header(cfg, meta, profile, len(filtered))
+        _render_header(cfg, meta, profile, filtered)
 
     # KPIs
     k1, k2 = st.columns([6, 1], vertical_alignment="bottom")
@@ -371,8 +410,12 @@ def render_dashboard(cfg: dict) -> None:
         empty_state("No KPIs", "Use the KPIs menu to add one.")
 
     # Charts
-    c1, c2 = st.columns([5, 1.3], vertical_alignment="bottom")
+    active = any(cfg["filters"].get("categorical", {}).values()) or any(cfg["filters"].get("date", {}).values())
+    c1, c3, c2 = st.columns([4, 1.3, 1.3], vertical_alignment="bottom")
     c1.markdown("### Charts")
+    if active:
+        c3.button("Clear filters", icon=":material/filter_alt_off:", width="stretch", key="clear_all_filters",
+                  on_click=_clear_all_filters, args=(cfg["id"],), help="Show all data again")
     if c2.button("Add visual", icon=":material/add_chart:", width="stretch", type="primary"):
         _open_builder(None, filtered, profile)
     if not cfg["charts"]:
@@ -381,7 +424,15 @@ def render_dashboard(cfg: dict) -> None:
         cols = st.columns(len(row)) if len(row) > 1 else [st.container()]
         for col, spec in zip(cols, row):
             with col:
-                _render_chart(spec, filtered, profile, cfg["id"])
+                # The chart a selection was made on keeps showing every category (the selection is highlighted);
+                # all other visuals and the KPIs use the filtered rows.
+                sel = (cfg["filters"].get("categorical") or {}).get(spec.get("x")) if _clickable(spec, profile) else None
+                if sel:
+                    others = {"categorical": {c: v for c, v in cfg["filters"]["categorical"].items() if c != spec["x"]},
+                              "date": cfg["filters"].get("date") or {}}
+                    _render_chart(spec, apply_filters(df, others, profile), profile, cfg["id"], highlight=list(sel))
+                else:
+                    _render_chart(spec, filtered, profile, cfg["id"])
 
     st.write("")
     left, right = st.columns([1, 1.15], gap="large")

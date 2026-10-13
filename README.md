@@ -58,7 +58,7 @@ the **Overview** page.
 .venv\Scripts\python.exe -m pytest
 ```
 
-The 119 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
+The 124 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
 header detection, cleaning, profiling, type inference, KPI calculations, chart recommendations, filtering and
 aggregation, natural-language questions, saving and loading dashboards, and invalid input handling.
 
@@ -73,6 +73,7 @@ aggregation, natural-language questions, saving and loading dashboards, and inva
 | **Cleaning** | Skips title rows above the header and removes empty rows and columns. Duplicate column names get suffixes and blank headers are named automatically. Repeated header rows are removed, and `Total`/`Subtotal` rows are excluded so totals aren't double-counted. Currency, thousands separators, `%` values, `(negative)` values and mixed date formats are parsed. **Every change is listed as a warning, and nothing is dropped silently.** |
 | **Profiling** | Each column gets a role: date, measure, category, identifier, free text, coordinate or empty. The profile also covers missing values, duplicates, unique counts, summary statistics, outliers and date ranges. IDs, years and row numbers are never summed. Rates, percentages, prices and scores are averaged rather than summed. |
 | **Dashboard** | KPI cards (with period-over-period change when there's a valid event date), plus line, bar, donut, scatter, box, histogram, summary-table and map charts chosen by deterministic rules. Titles name the real column, for example "Sum of Amount", so a measure is never relabelled as "Revenue". |
+| **Sharing** | **Manage → Download as web page (.html)** saves one file that opens in any browser, offline, with no installation: KPIs, interactive charts (hover, zoom) and insights, using the current filters. It's a snapshot, so filters can't be changed in it. **Manage → Download to edit later (.zip)** saves the settings plus the original file; import it under My Dashboards to keep editing. |
 | **Filtering** | A filter bar for date ranges and categories, plus cross-filtering: click a bar to filter the whole dashboard. Every KPI, chart, insight and answer is recalculated on the filtered rows. The uploaded data itself is never modified. |
 | **Visual builder** | **Add visual**, or **⋮ → Edit visual** on any chart, opens a builder with a live preview, in the style of Power BI. Pick a visual type from the gallery (line, area, column, bar, donut, matrix heatmap, scatter, histogram, box plot, table, map), then fill the field wells: axis, values (up to 4 measures, each with its own calculation), legend, rows for a matrix, and bubble size. **Filters on this visual** apply to that chart only. **Format** covers title, sort, top-N, side-by-side / stacked / 100% stacked series, data labels, time grouping and half or full width. |
 | **Chart menu (⋮)** | Edit visual, duplicate, switch between half and full width, move earlier or later, remove, and **revert to recommendation** for any auto-generated chart you changed. |
