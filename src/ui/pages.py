@@ -270,7 +270,10 @@ def settings_page() -> None:
             n_ds, n_db = storage.clear_all()
             state.close_dashboard()
             st.cache_data.clear()
-            st.success(f"Removed {n_ds} dataset(s) and {n_db} dashboard(s).")
+            st.session_state["cleared_msg"] = f"Removed {n_ds} dataset(s) and {n_db} dashboard(s)."
+            st.rerun()  # refresh the lists above so they no longer show the deleted files
+        if st.session_state.get("cleared_msg"):
+            st.success(st.session_state.pop("cleared_msg"))
 
     with card("settings_ai"):
         st.markdown("### AI features")
