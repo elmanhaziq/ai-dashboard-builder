@@ -5,10 +5,10 @@ import pandas as pd
 import streamlit as st
 
 from .. import config
-from ..agent.actions import all_decided, record_cleaning_decision, set_consent
+from ..agent.actions import all_decided, record_cleaning_decision, set_assistant
 from ..agent.cleaning import describe
 from ..agent.context import AgentContext
-from ..agent.llm import get_llm, provider_status
+from ..agent.llm import PRESETS, available_providers, build_llm, describe_choice, list_models, provider_status
 from ..agent.orchestrator import run_turn
 from ..agent.workflow import STEP_LABELS, Stage, step_index
 from ..data_loader import DataLoadError, choose_default_sheet, list_sheets, sheet_dimensions, validate_upload
@@ -19,9 +19,57 @@ from .theme import card, chips, empty_state, esc, human_size, page_header
 SESSION_KEY = "analysis"
 
 
+GUIDED = "__guided__"
+
+
 @st.cache_resource(show_spinner=False)
-def _llm():
-    return get_llm()
+def _llm(provider: str, model: str):
+    return build_llm(provider, model)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _models(provider: str) -> list[str]:
+    return list(list_models(provider))
+
+
+def _choice(ctx: AgentContext) -> tuple[str | None, str | None]:
+    """The assistant chosen for this analysis (older analyses fall back to the configured default)."""
+    m = ctx.memory
+    if not m.consent:
+        return None, None
+    if m.llm_choice.get("provider"):
+        return m.llm_choice["provider"], m.llm_choice.get("model")
+    status = provider_status()
+    return (status["name"], status["model"]) if status["enabled"] else (None, None)
+
+
+def _assistant_picker(key: str, current: tuple[str | None, str | None] | None) -> tuple[bool, str | None, str | None]:
+    """Radio to choose the guided assistant or an AI provider + model. Returns (chosen?, provider, model)."""
+    providers = available_providers()
+    options = [GUIDED] + providers
+    labels = {GUIDED: "Guided assistant — offline, free, fixed rules (no AI service)"}
+    for p in providers:
+        labels[p] = f"{PRESETS[p]['label']} — {PRESETS[p]['cost']}"
+    idx = None if current is None else options.index(current[0] or GUIDED) if (current[0] or GUIDED) in options else 0
+    pick = st.radio("Who should help you?", options, index=idx, format_func=labels.get, key=f"{key}_prov")
+    if pick is None:
+        st.caption("Choose an assistant to continue.")
+        return False, None, None
+    if pick == GUIDED:
+        if providers:
+            st.caption("Free-form questions work much better with an AI model.")
+        return True, None, None
+    models = _models(pick)
+    cur_model = current[1] if current and current[0] == pick else None
+    model = st.selectbox("Model", models, index=models.index(cur_model) if cur_model in models else 0, key=f"{key}_model",
+                         help="The first one is the recommended default. Larger models are smarter but slower and have "
+                              "smaller free limits.")
+    note = PRESETS[pick]["data_note"]
+    if not PRESETS[pick]["local"]:
+        note = ("Choosing this sends column names, summary statistics and up to 5 example rows (never the whole file). "
+                + note)
+    st.caption(note)
+    return True, pick, model
 
 
 def _loader(dataset_id: str, sheet: str | None, header_row: int | None):
@@ -36,7 +84,8 @@ def _context(sess: dict) -> AgentContext:
 
 
 def _run(ctx: AgentContext, text: str | None = None, event: str | None = None) -> None:
-    llm = _llm() if ctx.memory.consent else None
+    provider, model = _choice(ctx)
+    llm = _llm(provider, model) if provider else None
     with st.spinner("Thinking…" if llm else "Working on it…"):
         run_turn(ctx, llm, text, event)
     st.rerun()
@@ -104,13 +153,8 @@ def _start_screen() -> None:
                 sheet = pend["sheets"][0]
                 if len(pend["sheets"]) > 1:
                     sheet = st.selectbox("Which sheet should I look at?", pend["sheets"], index=pend["sheets"].index(pend["default"]))
-                consent = False
-                if status["enabled"]:
-                    label = (f"Use the AI assistant ({status['provider']}, runs on this computer)" if status["local"] else
-                             f"Allow {status['provider']} to see column names, summary statistics and up to 5 example rows")
-                    consent = st.checkbox(label, value=False,
-                                          help="Unticked = the built-in guided assistant; nothing is sent to an AI service.")
-                if st.button("Start analysis", type="primary", icon=":material/auto_awesome:"):
+                chosen, provider, model = _assistant_picker("start", None)
+                if st.button("Start analysis", type="primary", icon=":material/auto_awesome:", disabled=not chosen):
                     sess = {"dataset_id": pend["dataset_id"], "sheet": sheet, "header_row": None}
                     try:
                         with st.spinner("Reading your data…"):
@@ -118,7 +162,7 @@ def _start_screen() -> None:
                     except (DataLoadError, StorageError) as exc:
                         st.error(str(exc))
                         return
-                    set_consent(ctx, consent and status["enabled"])
+                    set_assistant(ctx, provider, model)
                     st.session_state[SESSION_KEY] = sess
                     st.session_state.pop("analyst_pending", None)
                     _run(ctx, event="start")
@@ -248,7 +292,7 @@ def _advanced(ctx: AgentContext) -> None:
             st.dataframe(pd.DataFrame([{"Question": q["question"], "Column": q["column"] or "—", "Answer": q["answer"] or "(waiting)"}
                                        for q in m.questions]), hide_index=True, width="stretch") if m.questions else st.caption("None yet.")
         with t4:
-            st.caption(f"Workflow stage: {m.stage} · assistant: {provider_status()['provider'] if m.consent else 'guided'}")
+            st.caption(f"Workflow stage: {m.stage} · assistant: {describe_choice(*_choice(ctx))}")
             st.dataframe(pd.DataFrame([{"When": e["at"][11:19], "Step": e["name"], "OK": e["ok"], "Detail": str(e["detail"])[:160]}
                                        for e in m.events[-60:]][::-1]), hide_index=True, width="stretch", height=260)
 
@@ -263,13 +307,24 @@ def _analysis_screen(sess: dict) -> None:
             st.rerun()
         return
     m = ctx.memory
-    head, actions = st.columns([4, 1.3], vertical_alignment="bottom")
+    provider, model = _choice(ctx)
+    head, actions = st.columns([4, 1.6], vertical_alignment="bottom")
     with head:
         page_header("AI Analyst", m.dataset_name)
         chips([(f"Sheet: {m.sheet}", "") if m.sheet and m.sheet != "CSV data" else ("CSV file", ""),
-               ((provider_status()["provider"] or "AI assistant") if m.consent else "Guided assistant (offline)", "accent"),
+               (describe_choice(provider, model), "accent"),
                (f"Goal: {m.objective[:50]}", "") if m.objective else ("Goal not set yet", "warn")])
     with actions:
+        with st.popover("Assistant", icon=":material/smart_toy:", width="stretch",
+                        help="Switch between the guided assistant and AI models at any time"):
+            chosen, new_provider, new_model = _assistant_picker(f"switch_{m.dataset_id}", (provider, model))
+            if chosen and (new_provider, new_model) != (provider, model) and st.button("Use this assistant", type="primary",
+                                                                                     width="stretch"):
+                set_assistant(ctx, new_provider, new_model)
+                m.add_message("assistant", f"Switched to **{describe_choice(new_provider, new_model)}**. "
+                                           "Everything we've decided so far is kept.", kind="notice")
+                ctx.save()
+                st.rerun()
         if st.button("New analysis", icon=":material/add:", width="stretch"):
             st.session_state.pop(SESSION_KEY, None)
             st.session_state.pop("analyst_upload_id", None)

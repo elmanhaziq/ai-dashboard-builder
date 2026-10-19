@@ -221,7 +221,13 @@ def handle(ctx: AgentContext, user_text: str | None = None, event: str | None = 
         if stage == Stage.READY:
             if user_text and not answered:
                 res, _ = run_tool(ctx, "answer_data_question", {"question": user_text})
-                _say(ctx, res.get("answer", "I couldn't work that out."), kind="answer", data={"table": res.get("table"), "method": res.get("method")})
+                text = res.get("answer", "I couldn't work that out.")
+                if not res.get("answered"):
+                    from .llm import available_providers
+                    if available_providers():
+                        text += ("\n\n**Tip:** I'm the offline guided assistant and only understand fixed question patterns. "
+                                 "Open **Assistant** (top right) and pick an AI model to ask free-form questions like this.")
+                _say(ctx, text, kind="answer", data={"table": res.get("table"), "method": res.get("method")})
             return
         return
 

@@ -415,7 +415,79 @@ class AnthropicLLM:
         raise LLMUnavailable("The AI service rejected the request format.")
 
 
+# --------------------------------------------------------------------------- choosing provider + model in the app
+
+_NOT_CHAT = ("embed", "tts", "image", "audio", "live", "computer-use", "transcribe", "nano-banana", "robotics", "omni",
+             "aqa", "imagen", "veo", "whisper", "guard", "vision-preview", "-native-")
+ANTHROPIC_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+
+
+def available_providers() -> list[str]:
+    """Providers the user can pick right now (a key is configured, or Ollama is running locally)."""
+    from .. import config
+
+    out = [n for n in ("gemini", "groq", "openrouter", "anthropic") if _key_for(PRESETS[n])]
+    if _env("DASHBOARD_LLM_BASE_URL") and _env("DASHBOARD_LLM_PROVIDER").lower() == "openai_compatible":
+        out.append("openai_compatible")
+    if not config.ONLINE and _ollama_models(PRESETS["ollama"]["base_url"]):
+        out.append("ollama")
+    return out
+
+
+@lru_cache(maxsize=16)
+def list_models(name: str) -> tuple[str, ...]:
+    """Chat models the provider offers to this key (live list where possible), default first."""
+    preset = PRESETS[name]
+    default = _env("DASHBOARD_LLM_MODEL") if provider_status().get("name") == name and _env("DASHBOARD_LLM_MODEL") else preset["model"]
+    models: list[str] = []
+    try:
+        if name == "ollama":
+            models = list(_ollama_models(_env("DASHBOARD_LLM_BASE_URL") or preset["base_url"]))
+        elif name == "anthropic":
+            models = list(ANTHROPIC_MODELS)
+        else:
+            import openai
+            client = openai.OpenAI(base_url=_env("DASHBOARD_LLM_BASE_URL") or preset["base_url"], api_key=_key_for(preset) or "none",
+                                   timeout=10.0, max_retries=0)
+            ids = [m.id.removeprefix("models/") for m in client.models.list()]
+            models = sorted(i for i in ids if not any(x in i for x in _NOT_CHAT))
+            if name == "gemini":
+                models = [i for i in models if i.startswith(("gemini", "gemma"))]
+            if name == "openrouter":
+                models = [i for i in models if i.endswith(":free")]
+    except Exception:  # noqa: BLE001 - offline / bad key: fall back to the default only
+        models = []
+    if default and default not in models:
+        models.insert(0, default)
+    elif default:
+        models.remove(default)
+        models.insert(0, default)
+    return tuple(models[:80])
+
+
+def describe_choice(name: str | None, model: str | None) -> str:
+    if not name:
+        return "Guided assistant (offline)"
+    return f"{PRESETS[name]['label']} · {model or PRESETS[name]['model']}"
+
+
 # --------------------------------------------------------------------------- factory
+
+def build_llm(name: str, model: str) -> LLMClient | None:
+    """Client for an explicitly chosen provider + model (None if it can't be created)."""
+    preset = PRESETS.get(name)
+    if preset is None:
+        return None
+    try:
+        if name == "anthropic":
+            return AnthropicLLM(model, _env("DASHBOARD_LLM_EFFORT").lower() or DEFAULT_EFFORT)
+        if name == "ollama":
+            return OllamaLLM(model, _env("DASHBOARD_LLM_BASE_URL") or preset["base_url"])
+        base = _env("DASHBOARD_LLM_BASE_URL") or preset["base_url"]
+        return OpenAICompatLLM(name, base, _key_for(preset), model)
+    except Exception:  # noqa: BLE001 - SDK missing or misconfigured → offline guided mode
+        return None
+
 
 def get_llm() -> LLMClient | None:
     status = provider_status()

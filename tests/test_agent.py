@@ -590,3 +590,50 @@ def test_free_tier_rate_limit_waits_then_retries():
     gem2._openai = fake_openai
     with pytest.raises(LLMUnavailable, match="limiting how fast"):
         gem2.create("S", [{"role": "user", "content": "hi"}], [])
+
+
+# ------------------------------------------------------------------ structured queries, insights, assistant choice
+
+def test_query_data_lets_the_model_choose_columns(mctx):
+    guided_to_ready(mctx)
+    work, _ = mctx.working()
+    res, err = run_tool(mctx, "query_data", {"intent": "rank", "metric": "Net revenue", "metric2": "", "group_by": "Region",
+                                             "aggregation": "sum", "top_n": 1, "order": "desc", "date_column": "", "time_grain": "",
+                                             "filters": []})
+    best = work.groupby("Region")["Net revenue"].sum().idxmax()
+    assert not err and best in res["result"]
+    # original (pre-rename) names work too, and filters restrict rows
+    res, err = run_tool(mctx, "query_data", {"intent": "overall_agg", "metric": "REV_NET", "metric2": "", "group_by": "",
+                                             "aggregation": "sum", "top_n": 0, "order": "desc", "date_column": "", "time_grain": "",
+                                             "filters": [{"column": "Region", "values": ["Central"]}]})
+    expected = work.loc[work["Region"] == "Central", "Net revenue"].sum()
+    assert not err and f"{expected:,.2f}" in res["result"]
+    res, err = run_tool(mctx, "query_data", {"intent": "period_rank", "metric": "Net revenue", "metric2": "", "group_by": "",
+                                             "aggregation": "sum", "top_n": 1, "order": "desc", "date_column": "", "time_grain": "",
+                                             "filters": []})
+    assert not err and "month" in res["method"]
+    res, err = run_tool(mctx, "query_data", {"intent": "rank", "metric": "Net revenue", "metric2": "", "group_by": "Department",
+                                             "aggregation": "sum", "top_n": 1, "order": "desc", "date_column": "", "time_grain": "",
+                                             "filters": []})
+    assert err and "Available columns" in res["error"]
+
+
+def test_get_insights_gives_grounded_good_and_bad_news(mctx):
+    guided_to_ready(mctx)
+    res, err = run_tool(mctx, "get_insights", {})
+    assert not err and res["findings"] and all("finding" in f for f in res["findings"])
+    assert res["recent_changes"] and {"measure", "change_pct", "direction"} <= set(res["recent_changes"][0])
+
+
+def test_query_and_insights_available_before_dashboard(mctx):
+    assert "query_data" in tools_for(Stage.OBJECTIVE) and "get_insights" in tools_for(Stage.CLARIFICATION)
+
+
+def test_assistant_choice_is_saved(mctx, storage):
+    from src.agent.actions import set_assistant
+    set_assistant(mctx, "gemini", "gemini-flash-lite-latest")
+    again = AgentContext.open(storage, mctx.memory.dataset_id, "Sheet1")
+    assert again.memory.consent and again.memory.llm_choice == {"provider": "gemini", "model": "gemini-flash-lite-latest"}
+    set_assistant(again, None, None)
+    assert not again.memory.consent and again.memory.llm_choice == {}
+    assert llm_mod.describe_choice(None, None) == "Guided assistant (offline)"

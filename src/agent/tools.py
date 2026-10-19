@@ -445,6 +445,80 @@ def t_answer_data_question(ctx: AgentContext, args: dict) -> dict:
     return out
 
 
+QUERY_INTENTS = ["group_agg", "rank", "overall_agg", "period_rank", "trend", "count_rows", "count_distinct",
+                 "correlation", "missing", "outliers", "extreme_row", "duplicates"]
+
+
+def _resolve_column(ctx: AgentContext, profile, name: str) -> str | None:
+    if not name:
+        return None
+    for candidate in (name, ctx.column_name(name)):
+        if candidate in profile.columns:
+            return candidate
+    folded = {c.casefold(): c for c in profile.columns}
+    if name.casefold() in folded:
+        return folded[name.casefold()]
+    raise ToolError(f"There is no column called '{name}'. Available columns: {', '.join(list(profile.columns)[:40])}.")
+
+
+def t_query_data(ctx: AgentContext, args: dict) -> dict:
+    """Structured calculation: the model chooses intent/columns, pandas computes the numbers."""
+    from ..query_engine import NeedsClarification, QueryPlan, execute_plan
+
+    df, profile = ctx.working()
+    metric = _resolve_column(ctx, profile, args["metric"])
+    metric2 = _resolve_column(ctx, profile, args["metric2"])
+    group = _resolve_column(ctx, profile, args["group_by"])
+    date_col = _resolve_column(ctx, profile, args["date_column"])
+    grain = args["time_grain"] or None
+    if (grain or args["intent"] in ("trend", "period_rank")) and not date_col:
+        date_col = next(iter(profile.date_columns), None)
+        if date_col is None:
+            raise ToolError("This dataset has no date column, so time-based questions can't be answered.")
+    if args["intent"] == "period_rank" and not grain:
+        grain = "M"
+    filters: dict[str, list[str]] = {}
+    for f in args["filters"][:5]:
+        col = _resolve_column(ctx, profile, f["column"])
+        if col:
+            filters[col] = [str(v) for v in f["values"][:20]]
+    agg = args["aggregation"]
+    if metric is None and agg not in ("count",):
+        agg = "count"
+    if args["intent"] == "count_distinct" and not group:
+        group = metric
+    plan = QueryPlan(intent=args["intent"], metric=metric, metric2=metric2, group=group, agg=agg,
+                     n=max(1, min(50, args["top_n"] or 5)), order=args["order"], time_grain=grain, date_col=date_col,
+                     filters=filters)
+    try:
+        res = execute_plan(plan, df, profile)
+    except NeedsClarification as exc:
+        raise ToolError(f"{exc} Columns: {', '.join(list(profile.columns)[:40])}.") from exc
+    out = {"answered": res.ok, "result": res.answer, "method": res.method}
+    if res.table is not None and len(res.table):
+        out["table"] = json.loads(res.table.head(15).to_json(orient="records", date_format="iso", default_handler=str))
+    return out
+
+
+def t_get_insights(ctx: AgentContext, args: dict) -> dict:
+    """Calculated findings (trend, concentration, outliers, correlation, data quality) plus recent period changes."""
+    from ..dashboard_service import _period_compare
+
+    df, profile = ctx.working()
+    findings = [{"title": i.title, "finding": i.text, "kind": i.kind} for i in generate_insights(df, profile, max_items=10)]
+    changes = []
+    dates = [d for d in profile.date_columns if profile.columns[d].stats.get("span_days", 0) >= 60]
+    if dates:
+        for m in [c for c in profile.metric_columns if profile.columns[c].aggregation == "sum"][:5]:
+            pct, label = _period_compare(df, m, "sum", dates[0])
+            if pct is not None:
+                changes.append({"measure": m, "change_pct": round(pct, 1), "comparison": label,
+                                "direction": "up" if pct > 0 else "down" if pct < 0 else "flat"})
+    return {"findings": findings, "recent_changes": changes,
+            "note": "Good news = rising totals, strong categories; bad news = falling totals, heavy concentration, "
+                    "data gaps. Quote only these numbers."}
+
+
 def t_update_dashboard(ctx: AgentContext, args: dict) -> dict:
     m = ctx.memory
     if not m.dashboard_id:
@@ -531,8 +605,22 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          _obj({}), t_validate_dashboard_plan),
     Tool("execute_dashboard_plan", "Build and save the dashboard from the validated plan. Returns calculated insights.",
          _obj({}), t_execute_dashboard_plan),
-    Tool("answer_data_question", "Answer a question about the data using the deterministic calculation engine.",
+    Tool("answer_data_question", "Answer a simple, clearly worded question with the rule-based question engine. "
+         "Prefer query_data, which lets you choose the exact columns.",
          _obj({"question": S}), t_answer_data_question),
+    Tool("query_data", "Calculate an answer with pandas. YOU translate the user's words to real column names "
+         "(e.g. 'department' → the closest category column such as 'Product Category'; 'sales' → 'Net Sales (RM)'), "
+         "and say which columns you used. intent: group_agg (value per group), rank (top/bottom N groups), "
+         "overall_agg (one total/average), period_rank (best/worst month etc.), trend, count_rows, count_distinct, "
+         "correlation (metric vs metric2), missing, outliers, extreme_row, duplicates. Use '' for unused text fields and 0 "
+         "for top_n when not ranking. filters: [{column, values}] to restrict rows.",
+         _obj({"intent": _enum(QUERY_INTENTS), "metric": S, "metric2": S, "group_by": S,
+               "aggregation": _enum(["sum", "mean", "median", "min", "max", "count", "nunique"]),
+               "top_n": I, "order": _enum(["desc", "asc"]), "date_column": S, "time_grain": _enum(["", "D", "W", "M", "Q", "Y"]),
+               "filters": _arr(_obj({"column": S, "values": _arr(S)}))}), t_query_data),
+    Tool("get_insights", "Calculated findings for summaries and 'good news / bad news': trends, the biggest groups, "
+         "outliers, related measures, data gaps, and the latest month-over-month change of each total.",
+         _obj({}), t_get_insights),
     Tool("update_dashboard", "Change the dashboard: add/update/remove a chart, add/remove a KPI, or rename it. "
          "Fill only the fields the action needs; use '' or empty objects elsewhere.",
          _obj({"action": _enum(["add_chart", "update_chart", "remove_chart", "add_kpi", "remove_kpi", "rename_dashboard"]),

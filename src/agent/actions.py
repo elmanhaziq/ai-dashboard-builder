@@ -38,6 +38,17 @@ def all_decided(ctx: AgentContext) -> bool:
     return not any(i.get("requires_approval") and i["status"] == "pending" for i in ctx.memory.cleaning_issues)
 
 
+def set_assistant(ctx: AgentContext, provider: str | None, model: str | None) -> None:
+    """The user picks who assists: None = offline guided assistant, otherwise an AI provider + model.
+    Picking an AI provider is the user's consent to share column summaries and a few example rows with it."""
+    m = ctx.memory
+    m.llm_choice = {"provider": provider, "model": model} if provider else {}
+    m.consent = bool(provider)
+    m.mode = "llm" if provider else "guided"
+    m.log_event("assistant", {"provider": provider, "model": model})
+    ctx.save()
+
+
 def set_consent(ctx: AgentContext, consent: bool) -> None:
     ctx.memory.consent = consent
     ctx.memory.mode = "llm" if consent else "guided"

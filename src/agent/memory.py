@@ -54,6 +54,7 @@ class AnalysisMemory:
     llm: dict = field(default_factory=lambda: {"transcript": [], "episode": 1, "summary": ""})
     consent: bool = False
     mode: str = "guided"
+    llm_choice: dict = field(default_factory=dict)  # {"provider": ..., "model": ...} chosen by the user
     events: list[dict] = field(default_factory=list)
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)

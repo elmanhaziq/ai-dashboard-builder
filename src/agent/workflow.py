@@ -129,6 +129,8 @@ def tool_min_stage() -> dict[str, Stage]:
         "validate_dashboard_plan": Stage.DASHBOARD_PLANNING,
         "execute_dashboard_plan": Stage.PLAN_VALIDATION,
         "answer_data_question": Stage.READY,
+        "query_data": Stage.OBJECTIVE,  # questions about the data can be answered at any point after upload
+        "get_insights": Stage.OBJECTIVE,
         "update_dashboard": Stage.READY,
     }
 
