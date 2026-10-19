@@ -175,7 +175,7 @@ Copy `.env.example` to `.env` to change any of these settings:
 | `DASHBOARD_SESSION_TTL_MINUTES` | 120 | Online mode: minutes of inactivity before a visitor's files are deleted. |
 | `DASHBOARD_LLM_PROVIDER` | auto | `auto`, `groq`, `gemini`, `openrouter`, `ollama`, `openai_compatible`, `anthropic`, or `none` (always guided). `auto` uses the first key it finds, in the order Anthropic → Gemini → Groq → OpenRouter. Ollama is only used when chosen explicitly. |
 | `GROQ_API_KEY` | (unset) | Free key from console.groq.com: fast hosted open-source models. Default model `llama-3.3-70b-versatile`. |
-| `GEMINI_API_KEY` | (unset) | Free key from aistudio.google.com. Default model `gemini-flash-latest`. On the free tier Google may use what you send to improve its products. |
+| `GEMINI_API_KEY` | (unset) | Free key from aistudio.google.com. Default model `gemini-flash-lite-latest`: the free tier of `gemini-flash-latest` allowed only 20 requests a day when tested, which is less than one analysis. On the free tier Google may use what you send to improve its products. |
 | `OPENROUTER_API_KEY` | (unset) | Key from openrouter.ai. Default model `meta-llama/llama-3.3-70b-instruct:free`. |
 | `ANTHROPIC_API_KEY` | (unset) | Paid Claude. Default model `claude-opus-5-5`. |
 | `DASHBOARD_LLM_MODEL` | per provider | Override the model, e.g. `qwen3:4b` for Ollama. Free model names change, so check the provider's list if you get a "doesn't offer the model" message. |

@@ -50,7 +50,7 @@ PRESETS: dict[str, dict] = {
                "key_env": [], "model": "qwen3:4b", "local": True, "cost": "Free",
                "data_note": "Runs entirely on this computer — nothing is sent anywhere."},
     "gemini": {"label": "Google Gemini (AI Studio)", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-               "key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"], "model": "gemini-flash-latest", "local": False,
+               "key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"], "model": "gemini-flash-lite-latest", "local": False,
                "cost": "Free tier with daily limits",
                "data_note": "Sent to Google. On the free tier Google may use what you send to improve its products."},
     "groq": {"label": "Groq (hosted open-source models)", "base_url": "https://api.groq.com/openai/v1",
@@ -167,9 +167,15 @@ def to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
             continue
         if msg["role"] == "assistant":
             text = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
-            calls = [{"id": b["id"], "type": "function",
-                      "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {})}}
-                     for b in content if b.get("type") == "tool_use"]
+            calls = []
+            for b in content:
+                if b.get("type") != "tool_use":
+                    continue
+                call = {"id": b["id"], "type": "function",
+                        "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {})}}
+                if b.get("provider_extra"):  # e.g. Gemini's thought_signature, which must be echoed back unchanged
+                    call["extra_content"] = b["provider_extra"]
+                calls.append(call)
             entry: dict = {"role": "assistant", "content": text or None}
             if calls:
                 entry["tool_calls"] = calls
@@ -201,14 +207,31 @@ def _parse_args(raw) -> dict:
         return {"_invalid_arguments": str(raw)[:500]}  # rejected by local validation → model sees the error
 
 
-def _blocks(text: str | None, calls: list[tuple[str | None, str, object]]) -> LLMReply:
+def _blocks(text: str | None, calls: list[tuple]) -> LLMReply:
+    """calls: (id, name, arguments[, provider_extra])."""
     content: list[dict] = []
     t = _clean_text(text)
     if t:
         content.append({"type": "text", "text": t})
-    for cid, name, args in calls:
-        content.append({"type": "tool_use", "id": cid or f"call_{uuid.uuid4().hex[:12]}", "name": name, "input": _parse_args(args)})
+    for call in calls:
+        cid, name, args = call[:3]
+        block = {"type": "tool_use", "id": cid or f"call_{uuid.uuid4().hex[:12]}", "name": name, "input": _parse_args(args)}
+        if len(call) > 3 and call[3]:
+            block["provider_extra"] = call[3]
+        content.append(block)
     return LLMReply(content=content, stop_reason="tool_use" if calls else "end_turn")
+
+
+def _retry_delay(exc) -> float:
+    """Seconds the provider asked us to wait (Gemini puts it in the error body; others use Retry-After)."""
+    try:
+        header = exc.response.headers.get("retry-after")
+        if header:
+            return float(header)
+    except (AttributeError, ValueError):
+        pass
+    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", str(exc))
+    return float(m.group(1)) if m else 20.0
 
 
 # --------------------------------------------------------------------------- OpenAI-compatible (Gemini, Groq, OpenRouter, …)
@@ -216,13 +239,17 @@ def _blocks(text: str | None, calls: list[tuple[str | None, str, object]]) -> LL
 class OpenAICompatLLM:
     """Any service speaking the OpenAI chat-completions API with function calling."""
 
-    def __init__(self, name: str, base_url: str, api_key: str, model: str, client=None):
+    def __init__(self, name: str, base_url: str, api_key: str, model: str, client=None, sleep=None, max_wait: float = 130.0):
+        import time
+
         import openai
 
         self._openai = openai
+        self.sleep = sleep or time.sleep
+        self.max_wait = max_wait
         self.name, self.model = name, model
         self.label = PRESETS.get(name, PRESETS["openai_compatible"])["label"]
-        self.client = client or openai.OpenAI(base_url=base_url, api_key=api_key or "none", timeout=180.0, max_retries=2)
+        self.client = client or openai.OpenAI(base_url=base_url, api_key=api_key or "none", timeout=180.0, max_retries=0)
 
     def create(self, system: str, messages: list[dict], tools: list[dict], allow_tools: bool = True) -> LLMReply:
         o = self._openai
@@ -231,24 +258,36 @@ class OpenAICompatLLM:
             kwargs["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                                  "parameters": _sanitize_schema(t["input_schema"])}} for t in tools]
             kwargs["tool_choice"] = "auto" if allow_tools else "none"
-        try:
-            resp = self.client.chat.completions.create(**kwargs)
-        except o.AuthenticationError as exc:
-            raise LLMUnavailable(f"{self.label} didn't accept the API key.") from exc
-        except o.RateLimitError as exc:
-            raise LLMUnavailable(f"{self.label}'s free limit was reached. Wait a minute (or until tomorrow) and try again.") from exc
-        except o.NotFoundError as exc:
-            raise LLMUnavailable(f"{self.label} doesn't offer the model '{self.model}'. Set DASHBOARD_LLM_MODEL in .env.") from exc
-        except o.BadRequestError as exc:
-            raise LLMUnavailable(f"{self.label} rejected the request: {getattr(exc, 'message', exc)}") from exc
-        except o.APIConnectionError as exc:
-            raise LLMUnavailable(f"Couldn't connect to {self.label}. Check the internet connection.") from exc
-        except o.APIStatusError as exc:
-            raise LLMUnavailable(f"{self.label} returned an error ({exc.status_code}).") from exc
+        waited = 0.0
+        while True:
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                break
+            except o.RateLimitError as exc:
+                # Free tiers allow only a few requests per minute: wait as asked (up to ~2 minutes in total).
+                delay = min(max(_retry_delay(exc), 2.0), 60.0)
+                if "PerDay" in str(exc):
+                    raise LLMUnavailable(f"{self.label}'s free daily limit for '{self.model}' is used up (it resets "
+                                         "tomorrow). Another model may still have quota — see DASHBOARD_LLM_MODEL in the README.") from exc
+                if waited + delay > self.max_wait:
+                    raise LLMUnavailable(f"{self.label} is limiting how fast requests can be sent. Wait a minute and try again.") from exc
+                self.sleep(delay + 1)
+                waited += delay + 1
+            except o.AuthenticationError as exc:
+                raise LLMUnavailable(f"{self.label} didn't accept the API key.") from exc
+            except o.NotFoundError as exc:
+                raise LLMUnavailable(f"{self.label} doesn't offer the model '{self.model}'. Set DASHBOARD_LLM_MODEL in .env.") from exc
+            except o.BadRequestError as exc:
+                raise LLMUnavailable(f"{self.label} rejected the request: {getattr(exc, 'message', exc)}") from exc
+            except o.APIConnectionError as exc:
+                raise LLMUnavailable(f"Couldn't connect to {self.label}. Check the internet connection.") from exc
+            except o.APIStatusError as exc:
+                raise LLMUnavailable(f"{self.label} returned an error ({exc.status_code}).") from exc
         if not resp.choices:
             raise LLMUnavailable(f"{self.label} returned an empty answer.")
         msg = resp.choices[0].message
-        calls = [(tc.id, tc.function.name, tc.function.arguments) for tc in (msg.tool_calls or []) if tc.function]
+        calls = [(tc.id, tc.function.name, tc.function.arguments, (getattr(tc, "model_extra", None) or {}).get("extra_content"))
+                 for tc in (msg.tool_calls or []) if tc.function]
         reply = _blocks(msg.content, calls)
         reply.usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
         return reply
@@ -327,6 +366,10 @@ class AnthropicLLM:
 
     def _request(self, system: str, messages: list[dict], tools: list[dict], allow_tools: bool) -> dict:
         tool_defs = [t if self._strict else {k: v for k, v in t.items() if k != "strict"} for t in tools]
+        # Fields added for other providers (e.g. Gemini's provider_extra) aren't part of the Messages API.
+        messages = [m if isinstance(m["content"], str) else
+                    {**m, "content": [{k: v for k, v in b.items() if k != "provider_extra"} for b in m["content"]]}
+                    for m in messages]
         kwargs = dict(
             model=self.model, max_tokens=16000, messages=messages,
             # Stable system prompt first so it can be cached across turns.

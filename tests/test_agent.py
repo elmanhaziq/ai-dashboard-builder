@@ -530,7 +530,7 @@ def test_provider_selection(monkeypatch):
     assert provider_status_safe()["enabled"] is False
     monkeypatch.setenv("GEMINI_API_KEY", "test")
     st = provider_status_safe()
-    assert st["name"] == "gemini" and "Google" in st["data_note"] and st["model"] == "gemini-flash-latest"
+    assert st["name"] == "gemini" and "Google" in st["data_note"] and st["model"] == "gemini-flash-lite-latest"
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("DASHBOARD_LLM_PROVIDER", "groq")
     assert provider_status_safe()["name"] == "groq"
@@ -545,3 +545,48 @@ def test_provider_selection(monkeypatch):
 
 def provider_status_safe():
     return llm_mod.provider_status()
+
+
+def test_gemini_thought_signature_is_echoed_back():
+    reply = llm_mod._blocks(None, [("c1", "inspect_dataset", "{}", {"google": {"thought_signature": "SIG"}})])
+    assert reply.content[0]["provider_extra"] == {"google": {"thought_signature": "SIG"}}
+    msgs = llm_mod.to_openai_messages("S", [{"role": "user", "content": "hi"}, {"role": "assistant", "content": reply.content}])
+    assert msgs[2]["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "SIG"}}
+    # The Claude connector strips the Gemini-only field
+    kw = AnthropicLLM(client=object())._request("S", [{"role": "assistant", "content": reply.content}], [], True)
+    assert "provider_extra" not in kw["messages"][0]["content"][0]
+
+
+def test_free_tier_rate_limit_waits_then_retries():
+    class RateLimit(Exception):
+        pass
+
+    class Other(Exception):
+        pass
+
+    fake_openai = type("O", (), {"RateLimitError": RateLimit, "AuthenticationError": Other, "NotFoundError": Other,
+                                 "BadRequestError": Other, "APIConnectionError": Other, "APIStatusError": Other})
+
+    class Msg:
+        content, tool_calls = "Hello", None
+
+    class Completions:
+        calls = 0
+
+        def create(self, **kw):
+            self.calls += 1
+            if self.calls < 3:
+                raise RateLimit("429 ... 'retryDelay': '7s'")
+            return type("R", (), {"choices": [type("C", (), {"message": Msg()})()], "usage": None})()
+
+    comp, slept = Completions(), []
+    client = type("Cl", (), {"chat": type("Ch", (), {"completions": comp})()})()
+    gem = llm_mod.OpenAICompatLLM("gemini", "x", "k", "m", client=client, sleep=slept.append)
+    gem._openai = fake_openai
+    reply = gem.create("S", [{"role": "user", "content": "hi"}], [])
+    assert reply.content[0]["text"] == "Hello" and slept == [8.0, 8.0]
+    comp.calls = -100  # keeps failing → gives up within the wait budget with a clear message
+    gem2 = llm_mod.OpenAICompatLLM("gemini", "x", "k", "m", client=client, sleep=slept.append, max_wait=20)
+    gem2._openai = fake_openai
+    with pytest.raises(LLMUnavailable, match="limiting how fast"):
+        gem2.create("S", [{"role": "user", "content": "hi"}], [])

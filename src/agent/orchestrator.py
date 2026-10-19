@@ -30,7 +30,9 @@ How you work:
 quality → plan the dashboard → validate → build → explore. Tools for later steps only become available once earlier \
 steps are done; the <app_state> block in each user message tells you the current step and what is still missing.
 - Use tools to look at the data. You receive profiles and at most a few example rows, never the whole file.
-- Ask ONE question at a time with ask_user_clarification, most important first, and offer short suggested answers. \
+- Whenever you need something from the user, call ask_user_clarification (never ask only in plain text — the tool \
+shows the question with clickable answers). Ask ONE question at a time, about ONE column, most important first, and \
+offer short suggested answers. \
 Don't ask about columns whose meaning is clear from strong evidence unless the meaning changes calculations. Never ask \
 something the user already answered — the tools tell you when that happened.
 - Never assume what an unclear column means (for example UAG_2, REV_NET, QTY_SLD). Ask, then save the user's answer \
