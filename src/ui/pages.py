@@ -282,22 +282,22 @@ def settings_page() -> None:
         ai = provider_status()
         st.markdown("### AI assistant")
         if ai["enabled"]:
+            sent = ("- **Runs on this computer.** Nothing is sent anywhere.\n" if ai["local"] else
+                    "- **What is sent, only when you allow it for an analysis:** column names, summary statistics, the "
+                    "most common values per column, up to 5 example rows, your messages and answers. The full file is "
+                    f"never sent. {ai['data_note']}\n")
             st.markdown(
-                f"- **Provider:** {ai['provider']} · model `{ai['model']}` · effort `{ai['effort']}`\n"
-                "- **What is sent, and only when you allow it for an analysis:** column names, summary statistics, the "
-                "most common values per column, up to 5 example rows, your messages, and your answers. The full file "
-                "is never sent.\n"
-                "- **What stays here:** every calculation, cleaning step and chart is done by the app's own pandas "
-                "engine. Claude plans and explains, but never produces the numbers.\n"
-                "- Anthropic's own data-handling terms apply to what is sent. Untick the consent box when you start "
-                "an analysis to use the offline guided assistant instead."
+                f"- **Provider:** {ai['provider']} · model `{ai['model']}` · {ai['cost']}\n" + sent
+                + "- **What stays here:** every calculation, cleaning step and chart is done by the app's own pandas "
+                "engine. The AI plans and explains, but never produces the numbers.\n"
+                "- Untick the consent box when you start an analysis to use the offline guided assistant instead."
             )
         else:
             st.markdown(
                 f"The **guided assistant** is active: it runs entirely on this {'server' if config.ONLINE else 'computer'} "
                 "with fixed rules, and nothing is sent to an AI service.\n\n"
-                f"_{ai['reason']}_ To use Claude, set `ANTHROPIC_API_KEY` (and optionally `DASHBOARD_LLM_MODEL`) in `.env` "
-                "and restart the app. See the README."
+                f"_{ai['reason']}_ Free options: start **Ollama** with a tool-capable model (e.g. `qwen3:4b`), or put a "
+                "Google AI Studio key in `.env` as `GEMINI_API_KEY`, then restart the app. See the README."
             )
         st.caption("Either way, insights and answers are calculated with pandas from your data, and all numbers come "
                    "from those calculations.")

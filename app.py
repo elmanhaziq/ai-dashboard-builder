@@ -41,7 +41,8 @@ nav = st.navigation(list(_pages.values()), position="sidebar")
 from src import config  # noqa: E402
 from src.agent.llm import provider_status  # noqa: E402
 
-_ai = provider_status()["enabled"]
+_status = provider_status()
+_ai, _ai_local = _status["enabled"], _status["local"]
 
 with st.sidebar:
     if config.ONLINE:
@@ -56,8 +57,8 @@ with st.sidebar:
     else:
         st.markdown(
             '<div class="privacy">Local mode: files and dashboards are stored on this computer only. '
-            + ("Nothing is sent to external services unless you allow the AI assistant (Claude) for an analysis; it then "
-               "sees column summaries and a few example rows, never the whole file.</div>" if _ai
+            + ("Nothing is sent to external services unless you allow an online AI assistant for an analysis; it then "
+               "sees column summaries and a few example rows, never the whole file.</div>" if _ai and not _ai_local
                else "No data is sent to external services.</div>"),
             unsafe_allow_html=True,
         )

@@ -54,18 +54,25 @@ def _stepper(stage: str) -> None:
 
 
 def _ai_notice(status: dict) -> None:
-    if status["enabled"]:
+    where = "server" if config.ONLINE else "computer"
+    if status["enabled"] and status["local"]:
         st.markdown(
-            f'<div class="ai-note"><b>AI assistant: Claude by Anthropic</b> ({esc(status["model"])}). If you allow it, the app sends '
-            "<b>column names, summary statistics and up to 5 example rows</b> from your file to Anthropic so Claude can understand "
-            "the data. The full file is never sent, and all numbers are still calculated on this "
-            f"{'server' if config.ONLINE else 'computer'}. If you don't allow it, a built-in guided assistant runs instead "
-            "and nothing is sent to any AI service.</div>", unsafe_allow_html=True)
+            f'<div class="ai-note"><b>AI assistant: {esc(status["provider"])}</b> — model <code>{esc(status["model"])}</code>. '
+            f"It runs on this {where}, is free, and nothing is sent anywhere. Small local models can be slow without a "
+            "graphics card (often 20–60 seconds per step). If you don't allow it, the faster built-in guided assistant "
+            "runs instead.</div>", unsafe_allow_html=True)
+    elif status["enabled"]:
+        st.markdown(
+            f'<div class="ai-note"><b>AI assistant: {esc(status["provider"])}</b> — model <code>{esc(status["model"])}</code> '
+            f"({esc(status['cost'])}). If you allow it, the app sends <b>column names, summary statistics and up to 5 example "
+            f"rows</b> from your file so the AI can understand the data. {esc(status['data_note'])} The full file is never "
+            f"sent, and all numbers are still calculated on this {where}. If you don't allow it, a built-in guided assistant "
+            "runs instead and nothing is sent to any AI service.</div>", unsafe_allow_html=True)
     else:
         st.markdown(
             '<div class="ai-note"><b>Guided mode.</b> No AI service is connected, so the built-in assistant guides you with '
-            f"fixed rules and nothing leaves this {'server' if config.ONLINE else 'computer'}. "
-            f"{esc(status['reason'] or '')} See the README to connect Claude.</div>", unsafe_allow_html=True)
+            f"fixed rules and nothing leaves this {where}. {esc(status['reason'] or '')} See the README to connect a free "
+            "AI (Ollama on your computer, or a Google Gemini key).</div>", unsafe_allow_html=True)
 
 
 def _start_screen() -> None:
@@ -99,8 +106,10 @@ def _start_screen() -> None:
                     sheet = st.selectbox("Which sheet should I look at?", pend["sheets"], index=pend["sheets"].index(pend["default"]))
                 consent = False
                 if status["enabled"]:
-                    consent = st.checkbox("Allow Claude (Anthropic) to see column names, summary statistics and up to 5 example rows",
-                                          value=False, help="Unticked = the built-in guided assistant; nothing is sent to an AI service.")
+                    label = (f"Use the AI assistant ({status['provider']}, runs on this computer)" if status["local"] else
+                             f"Allow {status['provider']} to see column names, summary statistics and up to 5 example rows")
+                    consent = st.checkbox(label, value=False,
+                                          help="Unticked = the built-in guided assistant; nothing is sent to an AI service.")
                 if st.button("Start analysis", type="primary", icon=":material/auto_awesome:"):
                     sess = {"dataset_id": pend["dataset_id"], "sheet": sheet, "header_row": None}
                     try:
@@ -239,7 +248,7 @@ def _advanced(ctx: AgentContext) -> None:
             st.dataframe(pd.DataFrame([{"Question": q["question"], "Column": q["column"] or "—", "Answer": q["answer"] or "(waiting)"}
                                        for q in m.questions]), hide_index=True, width="stretch") if m.questions else st.caption("None yet.")
         with t4:
-            st.caption(f"Workflow stage: {m.stage} · assistant: {'Claude' if m.consent else 'guided'}")
+            st.caption(f"Workflow stage: {m.stage} · assistant: {provider_status()['provider'] if m.consent else 'guided'}")
             st.dataframe(pd.DataFrame([{"When": e["at"][11:19], "Step": e["name"], "OK": e["ok"], "Detail": str(e["detail"])[:160]}
                                        for e in m.events[-60:]][::-1]), hide_index=True, width="stretch", height=260)
 
@@ -258,7 +267,7 @@ def _analysis_screen(sess: dict) -> None:
     with head:
         page_header("AI Analyst", m.dataset_name)
         chips([(f"Sheet: {m.sheet}", "") if m.sheet and m.sheet != "CSV data" else ("CSV file", ""),
-               ("Claude (Anthropic)" if m.consent else "Guided assistant (offline)", "accent"),
+               ((provider_status()["provider"] or "AI assistant") if m.consent else "Guided assistant (offline)", "accent"),
                (f"Goal: {m.objective[:50]}", "") if m.objective else ("Goal not set yet", "warn")])
     with actions:
         if st.button("New analysis", icon=":material/add:", width="stretch"):

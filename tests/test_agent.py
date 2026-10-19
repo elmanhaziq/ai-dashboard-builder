@@ -436,3 +436,112 @@ def test_every_message_is_persisted(mctx, storage):
     reloaded = AgentContext.open(storage, mctx.memory.dataset_id, "Sheet1")
     assert reloaded.memory.conversation == mctx.memory.conversation
     assert reloaded.memory.conversation[-1]["kind"] == "dashboard_ready"
+
+
+# ------------------------------------------------------------------ free / open-source providers
+
+from src.agent import llm as llm_mod  # noqa: E402
+
+
+def test_openai_message_conversion_round_trip():
+    transcript = [
+        {"role": "user", "content": [{"type": "text", "text": "start"}]},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "x"},
+                                          {"type": "text", "text": "Looking."},
+                                          {"type": "tool_use", "id": "t1", "name": "inspect_dataset", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "{\"rows\": 5}", "is_error": True}]},
+    ]
+    msgs = llm_mod.to_openai_messages("SYS", transcript)
+    assert msgs[0] == {"role": "system", "content": "SYS"}
+    assert msgs[1] == {"role": "user", "content": "start"}
+    assert msgs[2]["tool_calls"][0]["function"] == {"name": "inspect_dataset", "arguments": "{}"} and msgs[2]["content"] == "Looking."
+    assert msgs[3] == {"role": "tool", "tool_call_id": "t1", "content": "ERROR: {\"rows\": 5}"}
+
+
+def test_schema_sanitised_for_other_providers():
+    s = llm_mod._sanitize_schema(TOOLS["create_dashboard_plan"].api_definition()["input_schema"])
+    text = json.dumps(s)
+    assert "additionalProperties" not in text and '""' not in text
+
+
+def test_openai_compatible_client(mctx):
+    class Fn:
+        def __init__(self, n, a):
+            self.name, self.arguments = n, a
+
+    class TC:
+        def __init__(self, i, n, a):
+            self.id, self.function = i, Fn(n, a)
+
+    class Msg:
+        content = "<think>hmm</think>Let me look."
+        tool_calls = [TC("c1", "get_column_profile", '{"column": "REV_NET"}'), TC("c2", "inspect_dataset", "not json")]
+
+    class Resp:
+        choices = [type("C", (), {"message": Msg()})()]
+        usage = None
+
+    class Completions:
+        def create(self, **kw):
+            self.kw = kw
+            return Resp()
+
+    comp = Completions()
+    client = type("Cl", (), {"chat": type("Ch", (), {"completions": comp})()})()
+    gem = llm_mod.OpenAICompatLLM("gemini", "https://x", "key", "gemini-flash-latest", client=client)
+    reply = gem.create("SYS", [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+                       [TOOLS["get_column_profile"].api_definition()])
+    assert reply.content[0] == {"type": "text", "text": "Let me look."}  # reasoning tags stripped
+    assert reply.content[1]["input"] == {"column": "REV_NET"} and reply.stop_reason == "tool_use"
+    assert "_invalid_arguments" in reply.content[2]["input"]  # bad JSON → rejected by local validation, not executed
+    assert comp.kw["tools"][0]["type"] == "function" and comp.kw["tool_choice"] == "auto"
+    _, err = run_tool(mctx, "inspect_dataset", reply.content[2]["input"])
+    assert err
+
+
+def test_ollama_native_client():
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"message": {"content": "", "tool_calls": [{"function": {"name": "inspect_dataset", "arguments": {}}}]}}
+
+    class S:
+        def post(self, url, json=None, timeout=None):
+            self.url, self.body = url, json
+            return R()
+
+    s = S()
+    o = llm_mod.OllamaLLM("qwen3:4b", session=s)
+    transcript = [{"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                  {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "inspect_dataset", "input": {"x": 1}}]},
+                  {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "{}"}]}]
+    reply = o.create("SYS", transcript, [TOOLS["inspect_dataset"].api_definition()])
+    assert s.url.endswith("/api/chat") and s.body["think"] is False and s.body["options"]["num_ctx"] >= 8192
+    assert s.body["messages"][2]["tool_calls"][0]["function"]["arguments"] == {"x": 1}  # objects, not strings
+    assert reply.content[0]["name"] == "inspect_dataset" and reply.content[0]["id"]
+
+
+def test_provider_selection(monkeypatch):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY",
+              "OPENROUTER_API_KEY", "DASHBOARD_LLM_PROVIDER", "DASHBOARD_LLM_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(llm_mod, "_ollama_models", lambda base: ())
+    assert provider_status_safe()["enabled"] is False
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    st = provider_status_safe()
+    assert st["name"] == "gemini" and "Google" in st["data_note"] and st["model"] == "gemini-flash-latest"
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.setenv("DASHBOARD_LLM_PROVIDER", "groq")
+    assert provider_status_safe()["name"] == "groq"
+    monkeypatch.setenv("DASHBOARD_LLM_PROVIDER", "ollama")
+    assert provider_status_safe()["enabled"] is False  # not running
+    monkeypatch.setattr(llm_mod, "_ollama_models", lambda base: ("qwen3:4b",))
+    st = provider_status_safe()
+    assert st["name"] == "ollama" and st["local"] and st["cost"] == "Free"
+    monkeypatch.setenv("DASHBOARD_LLM_PROVIDER", "none")
+    assert provider_status_safe()["enabled"] is False
+
+
+def provider_status_safe():
+    return llm_mod.provider_status()

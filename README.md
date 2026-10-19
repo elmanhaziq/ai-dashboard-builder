@@ -5,9 +5,11 @@ want to understand, asks about columns it can't interpret (such as `UAG_2`), exp
 plain language, waits for your approval before cleaning anything, then builds an interactive dashboard. You can
 keep chatting with it afterwards. You can also build and customise dashboards yourself, Power BI style.
 
-The analyst is powered by **Claude** (Anthropic) when you configure an API key and allow it for an analysis;
-otherwise a built-in **guided assistant** runs the same workflow offline. Either way, every number, cleaning
-step and chart is calculated by the app's own pandas engine. No database, Docker or cloud service is needed.
+The analyst can use a **free** AI: open-source models through **Groq** or **OpenRouter**, **Google Gemini**
+(AI Studio key), or **Ollama** running on your own computer. Paid **Claude** also works. You enable one with a
+key in `.env` and allow it for each analysis; otherwise a built-in **guided assistant** runs the same workflow
+offline. Either way, every number, cleaning step and chart is calculated by the app's own pandas engine. No
+database, Docker or cloud service is needed.
 
 ---
 
@@ -60,7 +62,7 @@ the **Overview** page.
 .venv\Scripts\python.exe -m pytest
 ```
 
-The 149 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
+The 154 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
 header detection, cleaning, profiling, type inference, KPI calculations, chart recommendations, filtering and
 aggregation, natural-language questions, saving and loading dashboards, and invalid input handling.
 
@@ -171,12 +173,32 @@ Copy `.env.example` to `.env` to change any of these settings:
 | `DASHBOARD_DATA_DIR` | project folder | Where `uploads/` and `saved_dashboards/` live (local mode). |
 | `DASHBOARD_MODE` | auto | `local` or `online`. Auto-detects Streamlit Community Cloud. |
 | `DASHBOARD_SESSION_TTL_MINUTES` | 120 | Online mode: minutes of inactivity before a visitor's files are deleted. |
-| `ANTHROPIC_API_KEY` | (unset) | Enables Claude for the AI Analyst. Without it, the guided assistant runs offline. |
-| `DASHBOARD_LLM_PROVIDER` | auto | `auto` (Claude when a key is set), `anthropic`, or `none` (always guided). |
-| `DASHBOARD_LLM_MODEL` | `claude-opus-5-5` | Claude model used by the analyst. |
-| `DASHBOARD_LLM_EFFORT` | `medium` | Reasoning effort: `low`, `medium`, `high`, `xhigh` or `max`. Higher is slower and costs more. |
+| `DASHBOARD_LLM_PROVIDER` | auto | `auto`, `groq`, `gemini`, `openrouter`, `ollama`, `openai_compatible`, `anthropic`, or `none` (always guided). `auto` uses the first key it finds, in the order Anthropic → Gemini → Groq → OpenRouter. Ollama is only used when chosen explicitly. |
+| `GROQ_API_KEY` | (unset) | Free key from console.groq.com: fast hosted open-source models. Default model `llama-3.3-70b-versatile`. |
+| `GEMINI_API_KEY` | (unset) | Free key from aistudio.google.com. Default model `gemini-flash-latest`. On the free tier Google may use what you send to improve its products. |
+| `OPENROUTER_API_KEY` | (unset) | Key from openrouter.ai. Default model `meta-llama/llama-3.3-70b-instruct:free`. |
+| `ANTHROPIC_API_KEY` | (unset) | Paid Claude. Default model `claude-opus-5-5`. |
+| `DASHBOARD_LLM_MODEL` | per provider | Override the model, e.g. `qwen3:4b` for Ollama. Free model names change, so check the provider's list if you get a "doesn't offer the model" message. |
+| `DASHBOARD_LLM_BASE_URL` | per provider | Endpoint for `openai_compatible` (LM Studio, vLLM…) or a non-default Ollama address. |
+| `DASHBOARD_LLM_API_KEY` | (unset) | Key for `openai_compatible`. |
+| `DASHBOARD_OLLAMA_NUM_CTX` | 16384 | Ollama context window. |
+| `DASHBOARD_LLM_EFFORT` | `medium` | Claude only: reasoning effort. |
 
-On Streamlit Community Cloud, put `ANTHROPIC_API_KEY = "..."` in the app's **Secrets** instead of `.env`.
+On Streamlit Community Cloud, put the key (e.g. `GROQ_API_KEY = "..."`) in the app's **Secrets** instead of `.env`.
+Anyone visiting the public site who allows the AI will then use your key and its free-tier limits.
+
+### Which free AI should I use?
+
+| Option | Cost | Speed | Privacy | Notes |
+|---|---|---|---|---|
+| **Groq** (open-source Llama models) | Free tier | Fast | Data goes to Groq | Best balance of free, open source and speed |
+| **Google Gemini** (AI Studio key) | Free tier | Fast | Data goes to Google; free-tier data may be used to improve Google's products | Not open source |
+| **OpenRouter** `:free` models | Free, rate-limited | Varies | Data goes to OpenRouter and the model host | Free model list changes often |
+| **Ollama** on your computer | Free | Needs a graphics card. On a laptop CPU (tested on an i5-1135G7 with `qwen3:4b`), one step took 2–8 minutes. | Nothing leaves the computer | Best for privacy; practical only on a strong machine |
+
+The AI only plans and explains. Calculations always run locally in pandas, so a free model can't produce wrong
+totals; it can only ask less polished questions. Small models are more likely to misuse tools, and the app
+rejects and reports those calls.
 
 ## AI Analyst (agentic workflow)
 
