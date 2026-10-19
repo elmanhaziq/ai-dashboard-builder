@@ -227,7 +227,9 @@ def default_title(ctype: str, x: str | None, y: str | None, agg: str, color: str
         return f"{measure} by {x} and {x2}"
     if ctype in ("line", "area"):
         return f"{measure} over time" + (f" by {color}" if color else "")
-    if ctype in ("bar", "hbar", "donut"):
+    if ctype == "donut":
+        return f"Share of {'records' if agg == 'count' or not y else y} by {x}"
+    if ctype in ("bar", "hbar"):
         return f"{measure} by {x}"
     if ctype == "scatter":
         return f"{y} vs {x}"

@@ -77,10 +77,48 @@ def load_for(dataset_id: str, sheet: str | None, header_row: int | None) -> tupl
 
 
 def load_dashboard_data(cfg: dict) -> tuple[dict, LoadResult, DatasetProfile, list[str]]:
-    """Dataset for a dashboard, with the user's column-role corrections applied to the profile."""
+    """Dataset for a dashboard, with the user's column-role corrections applied to the profile.
+
+    Dashboards built by the AI analyst also carry approved cleaning operations and friendly column names;
+    those are replayed here on a copy of the data (the uploaded file is never changed).
+    """
     meta, result, profile = load_for(cfg["dataset_id"], cfg.get("sheet"), cfg.get("header_row"))
+    if cfg.get("cleaning_ops") or cfg.get("renames"):
+        result, profile = _transformed(meta, result, cfg)
     profile, warnings = apply_overrides(profile, cfg.get("column_overrides"))
+    for name, note in (cfg.get("column_notes") or {}).items():
+        if name in profile.columns:
+            profile.columns[name].notes.insert(0, f"Means: {note}")
     return meta, result, profile, warnings
+
+
+def _transformed(meta: dict, result: LoadResult, cfg: dict) -> tuple[LoadResult, DatasetProfile]:
+    ops_key = json.dumps([cfg.get("cleaning_ops") or [], cfg.get("renames") or {}], sort_keys=True)
+    storage = get_storage()
+    return _transform_cached(str(storage.dataset_file(meta["id"])), meta["ext"], cfg.get("sheet"), cfg.get("header_row"),
+                             meta["sha256"], ops_key)
+
+
+@st.cache_data(show_spinner=False, max_entries=6)
+def _transform_cached(path: str, ext: str, sheet, header_row, sha: str, ops_key: str) -> tuple[LoadResult, DatasetProfile]:
+    from dataclasses import replace
+
+    from ..agent.cleaning import CleaningError, validate_op
+    from ..agent.pipeline import transform_frame
+
+    base, _ = _load_file(path, ext, sheet, header_row, sha)
+    ops_raw, renames = json.loads(ops_key)
+    numeric = set(base.df.select_dtypes("number").columns)
+    ops = []
+    for op in ops_raw:
+        try:
+            ops.append(validate_op(op, list(base.df.columns), numeric))
+        except CleaningError:
+            continue  # an operation that no longer fits the file is skipped rather than breaking the dashboard
+    df, _, renames = transform_frame(base.df, ops, renames)
+    result = replace(base, df=df, percent_columns=[renames.get(c, c) for c in base.percent_columns],
+                     currency_columns=[renames.get(c, c) for c in base.currency_columns])
+    return result, profile_dataset(df, result.percent_columns, result.currency_columns)
 
 
 # --------------------------------------------------------------------------- dashboard session

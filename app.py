@@ -29,7 +29,8 @@ inject_css()
 brand()
 
 _pages = {
-    "overview": st.Page(pages.overview_page, title="Overview", icon=":material/space_dashboard:", url_path="overview", default=True),
+    "analyst": st.Page(pages.analyst_page, title="AI Analyst", icon=":material/insights:", url_path="analyst", default=True),
+    "overview": st.Page(pages.overview_page, title="Dashboard", icon=":material/space_dashboard:", url_path="overview"),
     "dashboards": st.Page(pages.dashboards_page, title="My Dashboards", icon=":material/folder_open:", url_path="dashboards"),
     "explorer": st.Page(pages.explorer_page, title="Data Explorer", icon=":material/table_view:", url_path="explorer"),
     "settings": st.Page(pages.settings_page, title="Settings", icon=":material/settings:", url_path="settings"),
@@ -38,19 +39,26 @@ st.session_state["_pages"] = _pages
 nav = st.navigation(list(_pages.values()), position="sidebar")
 
 from src import config  # noqa: E402
+from src.agent.llm import provider_status  # noqa: E402
+
+_ai = provider_status()["enabled"]
 
 with st.sidebar:
     if config.ONLINE:
         st.markdown(
             '<div class="privacy"><b>Online version.</b> Your uploads are processed on this server, visible only to your '
             f"browser session, and deleted after {config.SESSION_TTL_MINUTES // 60} hours of inactivity. "
-            "Don't upload confidential data. Download dashboards to keep them.</div>",
+            "Don't upload confidential data. Download dashboards to keep them."
+            + (" The AI assistant only sees column summaries and a few example rows, and only if you allow it." if _ai else "")
+            + "</div>",
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
             '<div class="privacy">Local mode: files and dashboards are stored on this computer only. '
-            "No data is sent to external services.</div>",
+            + ("Nothing is sent to external services unless you allow the AI assistant (Claude) for an analysis; it then "
+               "sees column summaries and a few example rows, never the whole file.</div>" if _ai
+               else "No data is sent to external services.</div>"),
             unsafe_allow_html=True,
         )
 

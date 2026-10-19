@@ -61,6 +61,19 @@ h3 { font-size: 1.0rem !important; font-weight: 600 !important; }
 .insight-title { font-size: 0.8rem; font-weight: 600; color: var(--ink); }
 .insight-text { font-size: 0.86rem; color: var(--ink-2); line-height: 1.45; }
 
+.stepper { display:flex; flex-wrap:wrap; gap:6px; margin: 10px 0 14px 0; }
+.step { display:flex; align-items:center; gap:6px; font-size:0.78rem; color: var(--ink-3); padding: 4px 10px 4px 4px;
+        border:1px solid var(--line); border-radius:999px; background: var(--surface); }
+.step span { width:20px; height:20px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
+             font-size:0.7rem; font-weight:600; background:#eef0f3; color: var(--ink-2); }
+.step.done { color: var(--ink-2); }
+.step.done span { background: #d6f0e0; color: #0f7b3f; }
+.step.now { color: var(--accent); border-color: #c9d8f1; background: var(--accent-soft); font-weight:600; }
+.step.now span { background: var(--accent); color:#fff; }
+.ai-note { font-size:0.85rem; color: var(--ink-2); line-height:1.5; border:1px solid var(--line); border-left: 3px solid var(--accent);
+           background: var(--surface); border-radius: 8px; padding: 10px 14px; }
+.panel-label { font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color: var(--accent); margin-bottom:4px; }
+.issue-text { font-size:0.84rem; color: var(--ink-2); line-height:1.45; margin-bottom: 4px; }
 .empty { border: 1px dashed #cfd4da; border-radius: 10px; padding: 28px 20px; text-align:center; color: var(--ink-2); background: var(--surface); }
 .empty b { color: var(--ink); display:block; margin-bottom: 4px; }
 .privacy { font-size: 0.75rem; color: var(--ink-3); line-height: 1.4; }

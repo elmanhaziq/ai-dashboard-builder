@@ -403,10 +403,17 @@ def _coerce_column(s: pd.Series, name: str, result: LoadResult) -> pd.Series:
     # Date strings
     if not is_num.any() and strings.str.match(_DATE_LIKE_RE).mean() >= 0.8:
         dayfirst = _infer_dayfirst(strings)
-        try:
-            parsed = pd.to_datetime(strings, errors="coerce", format="mixed", dayfirst=bool(dayfirst))
-        except (ValueError, TypeError):
-            parsed = pd.to_datetime(strings, errors="coerce", dayfirst=bool(dayfirst))
+        # ISO dates (2024-05-06) are always year-month-day; only the other styles follow the day/month inference.
+        # Parsing them together with dayfirst=True would silently swap day and month in the ISO values.
+        iso = strings.str.match(r"^\s*\d{4}[-/.]\d{1,2}[-/.]\d{1,2}")
+        parsed = pd.Series(pd.NaT, index=strings.index, dtype="datetime64[ns]")
+        for mask, kw in ((iso, {"yearfirst": True, "dayfirst": False}), (~iso, {"dayfirst": bool(dayfirst)})):
+            if mask.any():
+                try:
+                    part = pd.to_datetime(strings[mask], errors="coerce", format="mixed", **kw)
+                except (ValueError, TypeError):
+                    part = pd.to_datetime(strings[mask], errors="coerce", **kw)
+                parsed[mask] = part
         if parsed.notna().mean() >= 0.9:
             out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
             out[parsed.index] = parsed
@@ -496,10 +503,14 @@ def load_dataset(source: Source, ext: str, sheet: str | None = None, header_row:
 
     # Total / subtotal rows would double-count aggregates.
     if len(body):
+        # A row is a total row when a cell is a "Total"/"Subtotal" label and either that label is in one of the
+        # first columns, or most of the row's other cells (IDs, dates, names) are blank — typical of report layouts.
         label_cols = list(body.columns[: min(3, body.shape[1])])
+        blank_share = body.map(_is_blank).mean(axis=1)
         is_total = pd.Series(False, index=body.index)
-        for c in label_cols:
-            is_total |= body[c].map(lambda v: isinstance(v, str) and bool(_TOTAL_RE.match(v)))
+        for c in body.columns:
+            is_label = body[c].map(lambda v: isinstance(v, str) and bool(_TOTAL_RE.match(v)) and len(v.strip()) <= 30)
+            is_total |= is_label & ((c in label_cols) | (blank_share >= 0.4))
         if is_total.any() and is_total.sum() <= max(50, 0.05 * len(body)):
             result.removed_rows = body[is_total].copy()
             result.warnings.append(

@@ -106,9 +106,11 @@ def find_columns(question: str, profile: DatasetProfile) -> list[tuple[str, int,
     """Columns mentioned in the question as (name, position, score), best first, non-overlapping."""
     q = _stems(question)
     candidates: list[tuple[float, int, int, str]] = []  # score, pos, length, name
+    # Optional aliases (confirmed meanings / readable expansions, e.g. REV_NET → "net revenue") set by the analyst.
+    aliases: dict[str, list[str]] = profile.__dict__.get("_aliases") or {}
     all_tokens: dict[str, int] = {}
     for col in profile.columns:
-        for t in set(_stems(col)):
+        for t in set(_stems(col)) | {t for a in aliases.get(col, []) for t in _stems(a)}:
             all_tokens[t] = all_tokens.get(t, 0) + 1
     for col in profile.columns:
         toks = _stems(col)
@@ -118,6 +120,17 @@ def find_columns(question: str, profile: DatasetProfile) -> list[tuple[str, int,
         if pos >= 0:
             candidates.append((10.0 + len(toks), pos, len(toks), col))
             continue
+        alias_hit = None
+        for alias in aliases.get(col, []):
+            atoks = [t for t in _stems(alias) if t not in _STOP or len(_stems(alias)) == 1]
+            if atoks and all(t in q for t in atoks):  # any word order: "net revenue" ↔ "revenue net"
+                idx = [q.index(t) for t in atoks]
+                cand = (9.0 + len(atoks), min(idx), max(idx) - min(idx) + 1, col)
+                alias_hit = max(alias_hit, cand) if alias_hit else cand
+        if alias_hit:
+            candidates.append(alias_hit)
+            continue
+        toks = toks + [t for a in aliases.get(col, []) for t in _stems(a)]
         # Partial: a distinctive token of the column name appears in the question.
         best = None
         for t in toks:
@@ -556,9 +569,15 @@ def _by_period(data: pd.DataFrame, plan: QueryPlan) -> tuple[pd.Series, str, boo
     return s.sort_index(), plan.time_grain, False
 
 
-def answer_question(question: str, df: pd.DataFrame, profile: DatasetProfile, interpreter: Interpreter | None = None) -> QueryResult:
-    """Interpret and answer ``question``. Never fabricates numbers; asks to rephrase when unsure."""
+def answer_question(question: str, df: pd.DataFrame, profile: DatasetProfile, interpreter: Interpreter | None = None,
+                    aliases: dict[str, list[str]] | None = None) -> QueryResult:
+    """Interpret and answer ``question``. Never fabricates numbers; asks to rephrase when unsure.
+
+    ``aliases`` maps column names to other words the user may use for them (e.g. confirmed meanings).
+    """
     interpreter = interpreter or RuleBasedInterpreter()
+    if aliases is not None:
+        profile.__dict__["_aliases"] = {c: [a for a in v if a] for c, v in aliases.items() if c in profile.columns}
     try:
         plan = interpreter.interpret(question, df, profile)
         if isinstance(plan, QueryResult):

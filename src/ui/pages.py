@@ -14,6 +14,7 @@ from . import state
 from .dashboard_view import render_dashboard
 from .theme import card, chips, date_column_config, empty_state, esc, human_size, page_header
 from .upload_view import render_landing, render_staging
+from .analyst_view import analyst_page  # noqa: F401  (page entry point)
 
 
 def overview_page() -> None:
@@ -276,11 +277,27 @@ def settings_page() -> None:
             st.success(st.session_state.pop("cleared_msg"))
 
     with card("settings_ai"):
-        st.markdown("### AI features")
-        st.markdown(
-            "Insights and answers come from a **rule-based engine** built into the app: every number is calculated "
-            "with pandas on your data, and no AI service receives it. No API key is needed.\n\n"
-            "The query engine turns a question into a structured plan before calculating anything, so an optional "
-            "LLM could later interpret questions while pandas still does all the maths. No external AI provider "
-            "is configured in this version."
-        )
+        from ..agent.llm import provider_status
+
+        ai = provider_status()
+        st.markdown("### AI assistant")
+        if ai["enabled"]:
+            st.markdown(
+                f"- **Provider:** {ai['provider']} · model `{ai['model']}` · effort `{ai['effort']}`\n"
+                "- **What is sent, and only when you allow it for an analysis:** column names, summary statistics, the "
+                "most common values per column, up to 5 example rows, your messages, and your answers. The full file "
+                "is never sent.\n"
+                "- **What stays here:** every calculation, cleaning step and chart is done by the app's own pandas "
+                "engine. Claude plans and explains, but never produces the numbers.\n"
+                "- Anthropic's own data-handling terms apply to what is sent. Untick the consent box when you start "
+                "an analysis to use the offline guided assistant instead."
+            )
+        else:
+            st.markdown(
+                f"The **guided assistant** is active: it runs entirely on this {'server' if config.ONLINE else 'computer'} "
+                "with fixed rules, and nothing is sent to an AI service.\n\n"
+                f"_{ai['reason']}_ To use Claude, set `ANTHROPIC_API_KEY` (and optionally `DASHBOARD_LLM_MODEL`) in `.env` "
+                "and restart the app. See the README."
+            )
+        st.caption("Either way, insights and answers are calculated with pandas from your data, and all numbers come "
+                   "from those calculations.")

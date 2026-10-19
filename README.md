@@ -1,11 +1,13 @@
 # AI Dashboard Builder (local prototype)
 
-Upload an Excel workbook or CSV file. The app profiles the data, recommends KPIs and charts, and builds an
-interactive dashboard that you can filter, customise, save and reopen. You can also ask questions in plain
-English and get answers calculated with pandas from your own data.
+Upload an Excel workbook or CSV file and work with an **AI data analyst**. It reads your data, asks what you
+want to understand, asks about columns it can't interpret (such as `UAG_2`), explains data-quality problems in
+plain language, waits for your approval before cleaning anything, then builds an interactive dashboard. You can
+keep chatting with it afterwards. You can also build and customise dashboards yourself, Power BI style.
 
-Everything runs on your computer. No API keys, databases, Docker or cloud services are needed, and no data
-leaves the machine.
+The analyst is powered by **Claude** (Anthropic) when you configure an API key and allow it for an analysis;
+otherwise a built-in **guided assistant** runs the same workflow offline. Either way, every number, cleaning
+step and chart is calculated by the app's own pandas engine. No database, Docker or cloud service is needed.
 
 ---
 
@@ -58,7 +60,7 @@ the **Overview** page.
 .venv\Scripts\python.exe -m pytest
 ```
 
-The 124 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
+The 149 tests use only the synthetic data in `tests/synthetic.py`. They cover file loading, worksheet selection,
 header detection, cleaning, profiling, type inference, KPI calculations, chart recommendations, filtering and
 aggregation, natural-language questions, saving and loading dashboards, and invalid input handling.
 
@@ -106,7 +108,9 @@ ai-dashboard-builder/
 │   ├── query_engine.py       Question → QueryPlan → pandas execution
 │   ├── storage.py            Local file storage with atomic writes
 │   ├── formatting.py
-│   └── ui/                   Streamlit pages, dashboard view, chart editor, theme
+│   ├── report_export.py      Standalone HTML export
+│   ├── agent/                AI Analyst: workflow, tools, LLM loop, guided assistant, memory, cleaning, planner
+│   └── ui/                   Streamlit pages (AI Analyst, dashboard, builder, explorer, settings), theme
 ├── tests/                    pytest suite + synthetic datasets
 ├── uploads/                  Uploaded files (git-ignored)
 └── saved_dashboards/         Dashboard JSON configs (git-ignored)
@@ -167,23 +171,61 @@ Copy `.env.example` to `.env` to change any of these settings:
 | `DASHBOARD_DATA_DIR` | project folder | Where `uploads/` and `saved_dashboards/` live (local mode). |
 | `DASHBOARD_MODE` | auto | `local` or `online`. Auto-detects Streamlit Community Cloud. |
 | `DASHBOARD_SESSION_TTL_MINUTES` | 120 | Online mode: minutes of inactivity before a visitor's files are deleted. |
+| `ANTHROPIC_API_KEY` | (unset) | Enables Claude for the AI Analyst. Without it, the guided assistant runs offline. |
+| `DASHBOARD_LLM_PROVIDER` | auto | `auto` (Claude when a key is set), `anthropic`, or `none` (always guided). |
+| `DASHBOARD_LLM_MODEL` | `claude-opus-5-5` | Claude model used by the analyst. |
+| `DASHBOARD_LLM_EFFORT` | `medium` | Reasoning effort: `low`, `medium`, `high`, `xhigh` or `max`. Higher is slower and costs more. |
 
-## Adding an LLM later
+On Streamlit Community Cloud, put `ANTHROPIC_API_KEY = "..."` in the app's **Secrets** instead of `.env`.
 
-`query_engine.py` separates **interpreting** a question from **calculating** the answer:
+## AI Analyst (agentic workflow)
+
+The **AI Analyst** page is the starting screen. You upload a file, answer a few questions, approve clean-up
+suggestions, and receive a dashboard. A progress bar shows where you are:
 
 ```
-question → Interpreter → QueryPlan (JSON, validated against the profile) → execute_plan() (pandas)
+UPLOAD → PROFILE → OBJECTIVE → CLARIFICATION → CLEANING_REVIEW → CLEANING_APPROVAL
+       → DASHBOARD_PLANNING → PLAN_VALIDATION → DASHBOARD_GENERATION → READY
 ```
 
-An LLM-backed interpreter only needs to return a `QueryPlan`. The plan is validated (known intent, existing
-columns with the right roles, a supported aggregation) and executed by the same deterministic pandas code,
-so the model never produces the numbers. Column interpretation and narrative summaries can be added the same
-way, using `DatasetProfile.to_dict()` as the model's input. If a provider is added, configure it through
-environment variables and show a clear notice before any data is sent off the machine. Keep local-only mode
-as the default.
+**Division of labour.** The LLM decides what to do next, asks questions, and explains. Python profiles,
+calculates, cleans, validates and draws:
+
+| Layer | Responsibility |
+|---|---|
+| `src/agent/orchestrator.py` | Tool-use loop with Claude (`claude-opus-5-5` via the official `anthropic` SDK). It offers only the tools allowed at the current stage, allows at most 12 tool calls per message, stops whenever the user must answer, keeps an append-only transcript, and repairs an interrupted turn. If Claude is unavailable, the guided assistant takes over for that turn. |
+| `src/agent/tools.py` | The 18 tools Claude can call: `inspect_dataset`, `get_column_profile`, `get_sample_records`, `identify_ambiguous_columns`, `ask_user_clarification`, `set_business_objective`, `save_column_interpretation`, `go_to_stage`, `propose_cleaning_operations`, `preview_cleaning_operations`, `request_cleaning_approval`, `apply_approved_transformations`, `suggest_dashboard_plan`, `create_dashboard_plan`, `validate_dashboard_plan`, `execute_dashboard_plan`, `answer_data_question`, `update_dashboard`. Each has a strict JSON schema; inputs are validated again in Python and the stage is checked before anything runs. No tool executes model-written code. |
+| `src/agent/workflow.py` | The state machine. A stage can only be entered when its requirements are met (goal recorded, unclear columns resolved, every clean-up proposal decided and applied, plan validated…). Going back to an earlier stage is allowed. |
+| `src/agent/actions.py` | Things **only the user** can do from the UI, such as approving or rejecting a clean-up step. They are deliberately not tools, so the model can never approve changes itself. |
+| `src/agent/ambiguity.py`, `quality.py` | Deterministic detection of unclear column names and data-quality issues, described in plain language. |
+| `src/agent/cleaning.py`, `pipeline.py` | Whitelisted clean-up operations: keep, fill with "Unknown", fill with median or mean, leave rows out, fix spelling and capitalisation, remove or flag duplicates. They run on a copy, never fill missing numbers with zero, and never delete unusual records automatically. |
+| `src/agent/planner.py` | Builds a plan around your goal, then validates it, whether it came from Claude or the rules. Validation rejects sums of average-type measures, IDs used as measures, columns you excluded, and titles that state numbers. It then builds the dashboard with the existing chart engine. |
+| `src/agent/guided.py` | The offline assistant: the same tools and checks, driven by fixed rules. |
+| `src/agent/memory.py` | Per-dataset memory stored as JSON next to the upload: goal, column meanings, questions and answers, clean-up decisions, change log, conversation and stage. Reopening a dataset restores all of it, and answered questions are never asked again. |
+
+**What Claude receives.** Only after you tick the consent box when starting an analysis: column names, summary
+statistics, the most common values per column, at most 5 example rows (values cut to 40 characters), your
+messages, and the results of the tools above. The full file is never sent, and Claude is told to quote only
+numbers that came from tool results. Without consent, or without an API key, nothing is sent to any AI service.
+
+**Dashboards built by the analyst** store the approved clean-up steps, friendly column names and column
+meanings in their settings. Those are replayed on a copy of the original file whenever the dashboard opens, so
+it looks the same after a restart. All the manual tools (Fields, visual builder, filters, exports) work on them
+as usual, and **Back to AI analyst** returns to the conversation.
+
+**Benchmark.** `scripts\benchmark_agent.py <file>` prints what the analyst would ask and propose for any
+spreadsheet, without changing your library. `tests/synthetic.py: malaysian_sales_rows()` is a deliberately messy
+test report with cryptic codes, RM text, mixed date formats, inconsistent labels, duplicates and subtotal rows.
 
 ## Known limitations
+
+- **The Claude integration was tested with a scripted fake model, not the live API**: no API key was available
+  while it was built. The request format follows Anthropic's SDK documentation and is covered by tests, but run
+  a real analysis after adding your key and report anything odd.
+- The guided assistant understands answers through keywords. It handles suggested answers and short
+  descriptions well, but long, nuanced replies work better with Claude.
+- Unclear-name detection is tuned for English column names and common business abbreviations.
+- "Leave rows with missing values out" applies to the whole dashboard, not to a single chart.
 
 - Several values in one visual always share **one** axis. There are no dual-axis charts, because they make
   unrelated scales look comparable. The builder warns you when values differ in scale by more than 20×.

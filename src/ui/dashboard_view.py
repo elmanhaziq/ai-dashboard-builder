@@ -52,6 +52,13 @@ def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, filtered: pd.
             items.append((f"{n_filtered:,} rows after filters", "accent"))
         items.append(("Unsaved changes", "warn") if state.is_dirty() else ("Saved", ""))
         chips(items)
+        analysis = cfg.get("analysis")
+        if analysis and st.button("Back to AI analyst", icon=":material/chat:", key="back_to_analyst"):
+            if state.is_dirty():
+                state.save_current()
+            st.session_state["analysis"] = {"dataset_id": analysis["dataset_id"], "sheet": analysis.get("sheet") or cfg.get("sheet"),
+                                            "header_row": cfg.get("header_row")}
+            st.switch_page(st.session_state["_pages"]["analyst"])
     with right:
         b1, b0, b2, b3 = st.columns([1, 1, 1.1, 1.3])
         if b0.button("Fields", icon=":material/dataset:", width="stretch", help="Correct column types and default calculations"):

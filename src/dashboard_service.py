@@ -247,6 +247,11 @@ def validate_dashboard_config(raw: Any, profile: DatasetProfile | None = None) -
         "filters": _clean_filters(raw.get("filters")),
         "filter_columns": [str(c) for c in (raw.get("filter_columns") or []) if isinstance(c, str)][:10],
         "column_overrides": _clean_overrides(raw.get("column_overrides")),
+        # Set by the AI analyst: replayed on load so the dashboard reopens with the approved cleaning and names.
+        "cleaning_ops": _clean_ops(raw.get("cleaning_ops")),
+        "renames": _clean_str_map(raw.get("renames"), 80),
+        "column_notes": _clean_str_map(raw.get("column_notes"), 300),
+        "analysis": _clean_analysis(raw.get("analysis")),
     }
     if profile is None:
         return cfg, warnings
@@ -273,6 +278,34 @@ def validate_dashboard_config(raw: Any, profile: DatasetProfile | None = None) -
 
 
 _OVERRIDE_ROLES = {"date", "metric", "dimension", "identifier", "text", "coordinate", "empty", "hidden"}
+
+
+def _clean_ops(raw: Any) -> list[dict]:
+    """Structural check of stored cleaning operations (full validation happens against the data on load)."""
+    from .agent.cleaning import OPERATIONS
+
+    out = []
+    for op in (raw if isinstance(raw, list) else [])[:50]:
+        if isinstance(op, dict) and op.get("op") in OPERATIONS:
+            col = op.get("column")
+            params = op.get("params") if isinstance(op.get("params"), dict) else {}
+            out.append({"op": op["op"], "column": str(col)[:255] if col else None, "params": params})
+    return out
+
+
+def _clean_str_map(raw: Any, limit: int) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k)[:255]: str(v)[:limit] for k, v in list(raw.items())[:500] if isinstance(v, str) and v.strip()}
+
+
+def _clean_analysis(raw: Any) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    out = {"dataset_id": str(raw.get("dataset_id") or "")[:32], "sheet": str(raw.get("sheet"))[:255] if raw.get("sheet") else None,
+           "objective": str(raw.get("objective") or "")[:300], "summary": str(raw.get("summary") or "")[:400],
+           "questions": [str(q)[:200] for q in (raw.get("questions") or [])[:6] if isinstance(q, str)]}
+    return out if _ID_RE.match(out["dataset_id"]) else None
 
 
 def _clean_overrides(raw: Any) -> dict:

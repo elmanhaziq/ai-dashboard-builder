@@ -94,3 +94,36 @@ def messy_rows() -> list[list]:
 
 def messy_frame() -> pd.DataFrame:
     return pd.DataFrame(messy_rows())
+
+
+def malaysian_sales_rows(n: int = 160, seed: int = 11) -> list[list]:
+    """A deliberately difficult Malaysian sales report (synthetic): title rows, cryptic column names
+    (UAG_2, REV_NET, QTY_SLD, BR_CD, DT_TRX), RM currency text, percentages, mixed date formats,
+    inconsistent region labels, missing sales reps, numeric IDs, exact duplicates and subtotal rows."""
+    rng = np.random.default_rng(seed)
+    regions = ["Central", "central", "CENTRAL ", "Northern", "Southern", "East Coast", "east coast"]
+    branches = ["KL01", "PJ02", "PG03", "JB04", "KT05"]
+    reps = ["Aisyah", "Wei Ming", "Ravi", "Nurul", None]
+    rows = [["Monthly Sales Report - Malaysia (Confidential)", None, None, None, None, None, None, None, None],
+            [None] * 9,
+            ["TRX_ID", "DT_TRX", "BR_CD", "Region", "Sales Rep", "QTY_SLD", "REV_NET", "UAG_2", "Disc %"]]
+    for i in range(n):
+        day = 1 + i % 28
+        month = 1 + (i // 28) % 6
+        if i % 3 == 0:
+            date = f"{day:02d}/{month:02d}/2024"
+        elif i % 3 == 1:
+            date = f"2024-{month:02d}-{day:02d}"
+        else:
+            date = f"{day} {['Jan','Feb','Mar','Apr','May','Jun'][month - 1]} 2024"
+        qty = int(rng.integers(1, 30))
+        rev = round(qty * float(rng.uniform(20, 300)), 2)
+        rows.append([
+            500000 + i, date, branches[i % 5], regions[i % 7], reps[i % 5], qty,
+            f"RM {rev:,.2f}", f"RM {round(rev * float(rng.uniform(0.05, 0.3)), 2):,.2f}", f"{int(rng.integers(0, 20))}%",
+        ])
+    rows.append(rows[10][:])  # exact duplicate transaction
+    rows.append(rows[20][:])
+    rows.append([None, None, None, "Subtotal", None, 999, "RM 99,999.00", "RM 9,999.00", None])
+    rows.append([None, None, None, "Grand Total", None, 9999, "RM 999,999.00", "RM 99,999.00", None])
+    return rows

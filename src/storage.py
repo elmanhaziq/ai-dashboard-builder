@@ -170,6 +170,39 @@ class Storage:
         shutil.rmtree(folder, ignore_errors=False) if folder.exists() else None
         return removed
 
+    # ------------------------------------------------------------------ analyst memory
+    def _analysis_path(self, dataset_id: str, key: str) -> Path:
+        if not re.fullmatch(r"[a-f0-9]{6,16}", key or ""):
+            raise StorageError("Invalid analysis key.")
+        return self._dataset_dir(dataset_id) / f"analysis-{key}.json"
+
+    def save_analysis(self, dataset_id: str, key: str, data: dict) -> None:
+        self.get_dataset(dataset_id)  # dataset must exist
+        atomic_write_text(self._analysis_path(dataset_id, key), json.dumps(data, indent=1, default=str))
+
+    def load_analysis(self, dataset_id: str, key: str) -> dict | None:
+        path = self._analysis_path(dataset_id, key)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StorageError("The saved analysis for this dataset is damaged.") from exc
+        return data if isinstance(data, dict) else None
+
+    def list_analyses(self) -> list[dict]:
+        out = []
+        for meta in self.list_datasets():
+            for path in self._dataset_dir(meta["id"]).glob("analysis-*.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                out.append({"dataset_id": meta["id"], "dataset_name": meta["original_name"], "sheet": data.get("sheet"),
+                            "stage": data.get("stage"), "objective": data.get("objective", ""),
+                            "updated_at": data.get("updated_at", ""), "dashboard_id": data.get("dashboard_id")})
+        return sorted(out, key=lambda a: a["updated_at"], reverse=True)
+
     # ------------------------------------------------------------------ dashboards
     def _dashboard_path(self, dashboard_id: str) -> Path:
         path = (self.dashboard_dir / f"{_check_id(dashboard_id, 'dashboard id')}.json").resolve()
