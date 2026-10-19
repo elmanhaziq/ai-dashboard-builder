@@ -1,6 +1,9 @@
 """The AI Analyst page: upload → conversation → questions → clean-up approval → dashboard → exploration."""
 from __future__ import annotations
 
+import hmac
+import os
+
 import pandas as pd
 import streamlit as st
 
@@ -8,6 +11,7 @@ from .. import config
 from ..agent.actions import all_decided, record_cleaning_decision, set_assistant
 from ..agent.cleaning import describe
 from ..agent.context import AgentContext
+from ..agent import usage
 from ..agent.llm import PRESETS, available_providers, build_llm, describe_choice, list_models, provider_status
 from ..agent.orchestrator import run_turn
 from ..agent.workflow import STEP_LABELS, Stage, step_index
@@ -43,9 +47,39 @@ def _choice(ctx: AgentContext) -> tuple[str | None, str | None]:
     return (status["name"], status["model"]) if status["enabled"] else (None, None)
 
 
+def _ai_locked() -> bool:
+    """True when the owner set DASHBOARD_AI_ACCESS_CODE and this visitor hasn't entered it yet.
+
+    Stops strangers on a public deployment from spending the owner's free AI quota."""
+    code = os.environ.get("DASHBOARD_AI_ACCESS_CODE", "").strip()
+    return bool(code) and not st.session_state.get("ai_unlocked")
+
+
+def _unlock_form(key: str) -> None:
+    code = os.environ.get("DASHBOARD_AI_ACCESS_CODE", "").strip()
+    entered = st.text_input("AI access code", type="password", key=f"{key}_code",
+                            help="The owner of this app limits AI use to people with the code. "
+                                 "The guided assistant works without it.")
+    if entered:
+        if hmac.compare_digest(entered.strip(), code):
+            st.session_state["ai_unlocked"] = True
+            st.rerun()
+        st.error("That code isn't right.", icon=":material/lock:")
+
+
+def _usage_text(provider: str, model: str) -> str:
+    try:
+        return usage.status(provider, model)["text"]
+    except Exception:  # noqa: BLE001 - usage display must never break the page
+        return ""
+
+
 def _assistant_picker(key: str, current: tuple[str | None, str | None] | None) -> tuple[bool, str | None, str | None]:
     """Radio to choose the guided assistant or an AI provider + model. Returns (chosen?, provider, model)."""
     providers = available_providers()
+    if providers and _ai_locked():
+        _unlock_form(key)
+        providers = []
     options = [GUIDED] + providers
     labels = {GUIDED: "Guided assistant — offline, free, fixed rules (no AI service)"}
     for p in providers:
@@ -64,6 +98,13 @@ def _assistant_picker(key: str, current: tuple[str | None, str | None] | None) -
     model = st.selectbox("Model", models, index=models.index(cur_model) if cur_model in models else 0, key=f"{key}_model",
                          help="The first one is the recommended default. Larger models are smarter but slower and have "
                               "smaller free limits.")
+    left = usage.status(pick, model) if model else None
+    if left:
+        icon = {"unlimited": ":material/all_inclusive:", "exhausted": ":material/block:", "paid": ":material/payments:"}
+        st.caption(f"{icon.get(left['kind'], ':material/data_usage:')} **Usage:** {left['text']}")
+        if left["kind"] == "exhausted":
+            st.warning("This model's free daily limit is used up. Pick another model (e.g. a *lite* one) or the "
+                       "guided assistant until it resets.", icon=":material/block:")
     note = PRESETS[pick]["data_note"]
     if not PRESETS[pick]["local"]:
         note = ("Choosing this sends column names, summary statistics and up to 5 example rows (never the whole file). "
@@ -85,7 +126,7 @@ def _context(sess: dict) -> AgentContext:
 
 def _run(ctx: AgentContext, text: str | None = None, event: str | None = None) -> None:
     provider, model = _choice(ctx)
-    llm = _llm(provider, model) if provider else None
+    llm = _llm(provider, model) if provider and not (_ai_locked() and not PRESETS[provider]["local"]) else None
     with st.spinner("Thinking…" if llm else "Working on it…"):
         run_turn(ctx, llm, text, event)
     st.rerun()
@@ -313,6 +354,7 @@ def _analysis_screen(sess: dict) -> None:
         page_header("AI Analyst", m.dataset_name)
         chips([(f"Sheet: {m.sheet}", "") if m.sheet and m.sheet != "CSV data" else ("CSV file", ""),
                (describe_choice(provider, model), "accent"),
+               *([(_usage_text(provider, model), "")] if provider and _usage_text(provider, model) else []),
                (f"Goal: {m.objective[:50]}", "") if m.objective else ("Goal not set yet", "warn")])
     with actions:
         with st.popover("Assistant", icon=":material/smart_toy:", width="stretch",

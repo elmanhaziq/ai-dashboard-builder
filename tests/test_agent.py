@@ -637,3 +637,50 @@ def test_assistant_choice_is_saved(mctx, storage):
     set_assistant(again, None, None)
     assert not again.memory.consent and again.memory.llm_choice == {}
     assert llm_mod.describe_choice(None, None) == "Guided assistant (offline)"
+
+
+# ---------------------------------------------------------------- AI usage tracker
+def test_usage_counts_gemini_and_learns_daily_limit(tmp_path):
+    from src.agent import usage
+
+    f = tmp_path / "u.json"
+    assert usage.status("gemini", "gemini-flash-lite-latest", f)["kind"] == "unknown"
+    usage.record_success("gemini", "gemini-flash-lite-latest", {"prompt_tokens": 100, "completion_tokens": 20}, path=f)
+    usage.record_success("gemini", "gemini-flash-lite-latest", None, path=f)
+    st = usage.status("gemini", "gemini-flash-lite-latest", f)
+    assert st["used"] == 2 and st["limit"] is None
+    err = ("429 RESOURCE_EXHAUSTED {'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', "
+           "'quotaValue': '1000'}")
+    assert usage.record_limit_error("gemini", "gemini-flash-lite-latest", err, path=f) == {"limit_day": 1000}
+    st = usage.status("gemini", "gemini-flash-lite-latest", f)
+    assert st["kind"] == "exhausted" and st["left"] == 0 and st["limit"] == 1000
+
+
+def test_usage_known_limit_and_day_reset(tmp_path):
+    import json
+
+    from src.agent import usage
+
+    f = tmp_path / "u.json"
+    usage.record_success("gemini", "gemini-flash-latest", path=f)
+    st = usage.status("gemini", "gemini-flash-latest", f)
+    assert st["kind"] == "counted" and st["used"] == 1 and st["left"] == 19
+    data = json.loads(f.read_text())
+    data["gemini"]["gemini-flash-latest"]["date"] = "2000-01-01"
+    f.write_text(json.dumps(data))
+    assert usage.status("gemini", "gemini-flash-latest", f)["used"] == 0
+
+
+def test_usage_reads_provider_headers(tmp_path):
+    from src.agent import usage
+
+    f = tmp_path / "u.json"
+    usage.record_success("groq", "llama-3.3-70b-versatile", headers={"X-RateLimit-Remaining-Requests": "998",
+                                                                     "x-ratelimit-limit-requests": "1000"}, path=f)
+    st = usage.status("groq", "llama-3.3-70b-versatile", f)
+    assert st["kind"] == "exact" and st["left"] == 998 and st["limit"] == 1000
+    assert usage.status("ollama", "qwen3:4b", f)["kind"] == "unlimited"
+    assert usage.status("anthropic", "claude-opus-5-5", f)["kind"] == "paid"
+    rows = usage.summary(f)
+    assert [r["provider"] for r in rows] == ["groq"]
+

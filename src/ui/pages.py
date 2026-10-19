@@ -290,7 +290,7 @@ def settings_page() -> None:
                 f"- **Provider:** {ai['provider']} · model `{ai['model']}` · {ai['cost']}\n" + sent
                 + "- **What stays here:** every calculation, cleaning step and chart is done by the app's own pandas "
                 "engine. The AI plans and explains, but never produces the numbers.\n"
-                "- Untick the consent box when you start an analysis to use the offline guided assistant instead."
+                "- Pick the offline guided assistant when you start an analysis (or switch any time) to avoid AI services."
             )
         else:
             st.markdown(
@@ -301,3 +301,20 @@ def settings_page() -> None:
             )
         st.caption("Either way, insights and answers are calculated with pandas from your data, and all numbers come "
                    "from those calculations.")
+        from ..agent import usage
+
+        st.markdown("#### AI usage & free limits")
+        rows = usage.summary()
+        if rows:
+            st.dataframe(
+                [{"Provider": r["provider"], "Model": r["model"], "Requests today": str(r["used"] or 0),
+                  "Limit": f"{r['limit']:,}" if r["limit"] is not None else ("∞" if r["kind"] == "unlimited" else "?"),
+                  "Left": f"{r['left']:,}" if r["left"] is not None else ("∞" if r["kind"] == "unlimited" else "?"),
+                  "Status": r["text"]} for r in rows],
+                hide_index=True, width="stretch")
+        else:
+            st.caption("No AI requests yet.")
+        st.caption("Counts are requests made by this app. Groq, OpenRouter and Claude report exact remaining numbers; "
+                   "Google Gemini doesn't, so the app counts requests itself (resetting at midnight Pacific time) and "
+                   "learns the limit the first time Google reports it. Ollama runs locally and is unlimited. Other apps "
+                   "using the same key share the same quota.")

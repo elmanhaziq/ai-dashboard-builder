@@ -261,9 +261,19 @@ class OpenAICompatLLM:
         waited = 0.0
         while True:
             try:
-                resp = self.client.chat.completions.create(**kwargs)
+                raw_api = getattr(self.client.chat.completions, "with_raw_response", None)
+                if raw_api is not None:
+                    raw = raw_api.create(**kwargs)
+                    resp, headers = raw.parse(), raw.headers
+                else:
+                    resp, headers = self.client.chat.completions.create(**kwargs), None
                 break
             except o.RateLimitError as exc:
+                try:
+                    from . import usage as usage_tracker
+                    usage_tracker.record_limit_error(self.name, self.model, str(exc))
+                except Exception:  # noqa: BLE001 - tracking must never break a request
+                    pass
                 # Free tiers allow only a few requests per minute: wait as asked (up to ~2 minutes in total).
                 delay = min(max(_retry_delay(exc), 2.0), 60.0)
                 if "PerDay" in str(exc):
@@ -290,6 +300,11 @@ class OpenAICompatLLM:
                  for tc in (msg.tool_calls or []) if tc.function]
         reply = _blocks(msg.content, calls)
         reply.usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
+        try:
+            from . import usage as usage_tracker
+            usage_tracker.record_success(self.name, self.model, reply.usage, headers)
+        except Exception:  # noqa: BLE001
+            pass
         return reply
 
 
@@ -345,7 +360,15 @@ class OllamaLLM:
         msg = r.json().get("message", {})
         calls = [(None, c["function"]["name"], c["function"].get("arguments") or {}) for c in msg.get("tool_calls") or []
                  if c.get("function", {}).get("name")]
-        return _blocks(msg.get("content"), calls)
+        reply = _blocks(msg.get("content"), calls)
+        try:
+            from . import usage as usage_tracker
+            data = r.json()
+            usage_tracker.record_success("ollama", self.model, {"input_tokens": data.get("prompt_eval_count") or 0,
+                                                                "output_tokens": data.get("eval_count") or 0})
+        except Exception:  # noqa: BLE001
+            pass
+        return reply
 
 
 # --------------------------------------------------------------------------- Anthropic (paid)
@@ -411,6 +434,11 @@ class AnthropicLLM:
                 raise LLMUnavailable("Couldn't connect to the AI service. Check the internet connection.") from exc
             content = [b.model_dump(mode="json", exclude_none=True) for b in resp.content]
             usage = resp.usage.model_dump(mode="json", exclude_none=True) if getattr(resp, "usage", None) else {}
+            try:
+                from . import usage as usage_tracker
+                usage_tracker.record_success("anthropic", self.model, usage)
+            except Exception:  # noqa: BLE001
+                pass
             return LLMReply(content=content, stop_reason=resp.stop_reason or "end_turn", usage=usage)
         raise LLMUnavailable("The AI service rejected the request format.")
 

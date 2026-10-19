@@ -9,6 +9,28 @@ import streamlit as st
 st.set_page_config(page_title="Dashboard Builder", page_icon=":material/space_dashboard:", layout="wide",
                    initial_sidebar_state="expanded")
 
+# Streamlit Cloud "Secrets" (or a local .streamlit/secrets.toml): expose simple top-level values such as
+# GEMINI_API_KEY or DASHBOARD_MODE as environment variables before the app's settings are read.
+import os  # noqa: E402
+
+try:
+    for _key, _value in st.secrets.items():
+        if isinstance(_value, (str, int, float, bool)) and _key.isupper():
+            os.environ.setdefault(_key, str(_value))
+except Exception:  # noqa: BLE001 - no secrets configured
+    pass
+
+# Streamlit Cloud "Secrets" (or a local .streamlit/secrets.toml): expose simple top-level values such as
+# GEMINI_API_KEY or DASHBOARD_MODE as environment variables before the app's settings are read.
+import os  # noqa: E402
+
+try:
+    for _key, _value in st.secrets.items():
+        if isinstance(_value, (str, int, float, bool)) and _key.isupper():
+            os.environ.setdefault(_key, str(_value))
+except Exception:  # noqa: BLE001 - no secrets configured
+    pass
+
 try:  # Started with a Python that lacks the dependencies (e.g. a global `streamlit run`)?
     import openpyxl, plotly, xlrd  # noqa: E401, F401
 except ImportError as _exc:

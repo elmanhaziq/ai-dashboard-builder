@@ -43,3 +43,10 @@ def marketing_loaded():
 def storage(tmp_path):
     from src.storage import Storage
     return Storage(tmp_path / "uploads", tmp_path / "saved_dashboards")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_ai_usage(tmp_path, monkeypatch):
+    """Tests must never write to the real ai_usage.json."""
+    from src.agent import usage
+    monkeypatch.setattr(usage, "USAGE_FILE", tmp_path / "ai_usage_test.json")

@@ -162,6 +162,36 @@ checked before decompressing, and the settings are validated like any saved dash
 **Create app → Deploy a public app from GitHub**, then pick this repository, branch `main`, main file `app.py`,
 and Python 3.13 under *Advanced settings*. Optionally add `DASHBOARD_MODE = "online"` to Secrets as well.
 
+### Using the AI on the online version
+
+The app reads Streamlit **Secrets** as settings: every top-level `UPPER_CASE` value becomes an environment variable.
+On [share.streamlit.io](https://share.streamlit.io), open your app → **⋮ → Settings → Secrets** and paste:
+
+```toml
+GEMINI_API_KEY = "your-key-from-aistudio.google.com"
+# Recommended on a public app: only people with this code can use the AI (everyone else gets the guided assistant).
+DASHBOARD_AI_ACCESS_CODE = "pick-a-code"
+```
+
+Save; the app restarts in about a minute. Visitors see an **AI access code** box in the assistant picker. Without
+the code, anyone on the public site would spend your free Gemini quota. Never put keys in the repository:
+`.env` and `.streamlit/secrets.toml` are git-ignored.
+
+### AI usage and free limits
+
+The assistant picker, the analysis header and **Settings → AI usage & free limits** show how much of each model's
+free allowance is left:
+
+| Provider | What you see | Where the number comes from |
+|---|---|---|
+| Groq, OpenRouter | "998 of 1,000 free requests left" | Exact, from the provider's rate-limit headers |
+| Google Gemini | "12 of 20 free requests used today", or "limit not known yet" | Counted by the app per model per day (resets at midnight Pacific time). The limit is learned the first time Google reports it. |
+| Claude | "Paid per use", plus the rate limit left | Anthropic's headers |
+| Ollama | "Unlimited" | Runs on your computer |
+
+Counts live in `ai_usage.json` (git-ignored) and include only this app's requests. Other apps using the same key
+share the quota. On Streamlit Cloud the file resets when the server restarts.
+
 ## Configuration
 
 Copy `.env.example` to `.env` to change any of these settings:
@@ -183,6 +213,7 @@ Copy `.env.example` to `.env` to change any of these settings:
 | `DASHBOARD_LLM_API_KEY` | (unset) | Key for `openai_compatible`. |
 | `DASHBOARD_OLLAMA_NUM_CTX` | 16384 | Ollama context window. |
 | `DASHBOARD_LLM_EFFORT` | `medium` | Claude only: reasoning effort. |
+| `DASHBOARD_AI_ACCESS_CODE` | (unset) | If set, visitors must enter this code before they can use an AI provider. The guided assistant always works. |
 
 On Streamlit Community Cloud, put the key (e.g. `GROQ_API_KEY = "..."`) in the app's **Secrets** instead of `.env`.
 Anyone visiting the public site who allows the AI will then use your key and its free-tier limits.
