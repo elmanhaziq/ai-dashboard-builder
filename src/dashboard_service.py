@@ -18,6 +18,7 @@ from .chart_generator import (
 )
 from .data_profiler import DATE, DIMENSION, DatasetProfile
 from .formatting import format_delta, format_value
+from .themes import clean_theme
 
 SCHEMA_VERSION = 1
 MAX_FILTER_OPTIONS = 300
@@ -252,6 +253,7 @@ def validate_dashboard_config(raw: Any, profile: DatasetProfile | None = None) -
         "renames": _clean_str_map(raw.get("renames"), 80),
         "column_notes": _clean_str_map(raw.get("column_notes"), 300),
         "analysis": _clean_analysis(raw.get("analysis")),
+        "theme": clean_theme(raw.get("theme")),
     }
     if profile is None:
         return cfg, warnings

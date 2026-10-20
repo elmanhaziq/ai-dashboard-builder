@@ -7,6 +7,7 @@ import streamlit as st
 
 from ..chart_generator import AGGREGATIONS, ChartConfigError, agg_label, describe_chart, new_id, validate_chart_spec, validate_kpi_spec
 from ..data_profiler import METRIC, DatasetProfile
+from .. import themes
 
 
 def _charts() -> list[dict]:
@@ -63,6 +64,12 @@ def _revert(chart_id: str, profile: DatasetProfile) -> None:
     _charts()[i] = clean
 
 
+def _reset_color(chart_id: str) -> None:
+    i = _index(chart_id)
+    if i >= 0:
+        _charts()[i]["color_hex"] = None
+
+
 def render_chart_menu(spec: dict, profile: DatasetProfile, on_edit) -> None:
     """Contents of a visual's ⋮ menu. ``on_edit`` opens the visual builder for this chart."""
     cid = spec["id"]
@@ -75,6 +82,19 @@ def render_chart_menu(spec: dict, profile: DatasetProfile, on_edit) -> None:
     if spec.get("origin"):
         st.button("Revert to recommendation", key=f"cm_rev_{cid}", on_click=_revert, args=(cid, profile),
                   icon=":material/undo:", width="stretch")
+    if spec["type"] not in ("table", "heatmap"):
+        pal = themes.resolve(st.session_state["dashboard"].get("theme"))["palette"]
+        cur = spec.get("color_hex") or pal[0]
+        a, b = st.columns([3, 2], vertical_alignment="bottom")
+        picked = a.color_picker("Main colour", cur, key=f"cm_col_{cid}_{cur}")
+        if picked.lower() != cur.lower():
+            i = _index(cid)
+            if i >= 0:
+                _charts()[i]["color_hex"] = picked.lower()
+                st.rerun()
+        if spec.get("color_hex"):
+            b.button("Theme colour", key=f"cm_colreset_{cid}", on_click=_reset_color, args=(cid,), width="stretch",
+                     help="Use the dashboard's colours again")
     c1, c2 = st.columns(2)
     c1.button("Earlier", key=f"cm_up_{cid}", on_click=_move, args=(cid, -1), icon=":material/arrow_upward:", width="stretch")
     c2.button("Later", key=f"cm_dn_{cid}", on_click=_move, args=(cid, 1), icon=":material/arrow_downward:", width="stretch")

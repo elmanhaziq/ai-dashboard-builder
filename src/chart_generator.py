@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from .data_profiler import COORDINATE, DATE, DIMENSION, IDENTIFIER, METRIC, DatasetProfile
+from .themes import is_hex
 
 CHART_TYPES = {
     "line": "Line (trend over time)",
@@ -212,6 +213,8 @@ def validate_chart_spec(spec: Any, profile: DatasetProfile) -> dict:
         "title_custom": bool(spec.get("title_custom", False)),
         "width": "full" if spec.get("width") == "full" else "half",
         "chart_filters": chart_filters,
+        # Optional main colour chosen for this visual (the rest of the dashboard palette follows it).
+        "color_hex": spec["color_hex"].strip().lower() if is_hex(spec.get("color_hex")) else None,
         "auto": bool(spec.get("auto", False)),
         "origin": origin,
     }

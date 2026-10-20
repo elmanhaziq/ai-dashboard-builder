@@ -2,6 +2,8 @@
 # Keep in sync with DASHBOARD_MAX_UPLOAD_MB in .env (the app also enforces its own limit).
 maxUploadSize = 50
 headless = true
+# Serves static/ (the assistant's animation frames) at app/static/.
+enableStaticServing = true
 
 [browser]
 gatherUsageStats = false

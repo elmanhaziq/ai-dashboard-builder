@@ -26,6 +26,8 @@ from ..chart_generator import ChartConfigError, validate_chart_spec, validate_kp
 from .chart_editor import render_chart_menu, render_kpi_manager
 from .visual_builder import BUILDER, builder_dialog, fields_dialog, start_builder
 from .theme import card, chart_heading, chips, date_column_config, empty_state, esc, insight_list, kpi_grid
+from .copilot_view import render_copilot
+from .. import themes
 
 PLOTLY_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
                  "toImageButtonOptions": {"format": "png", "scale": 2}}
@@ -60,7 +62,9 @@ def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, filtered: pd.
                                             "header_row": cfg.get("header_row")}
             st.switch_page(st.session_state["_pages"]["analyst"])
     with right:
-        b1, b0, b2, b3 = st.columns([1, 1, 1.1, 1.3])
+        b1, b0, bc, b2, b3 = st.columns([1, 1, 1.15, 1.1, 1.3])
+        with bc.popover("Colours", icon=":material/palette:", width="stretch", help="Dashboard and chart colours"):
+            _colours_menu(cfg)
         if b0.button("Fields", icon=":material/dataset:", width="stretch", help="Correct column types and default calculations"):
             fields_dialog(profile)
         if b1.button("Save", type="primary", icon=":material/save:", width="stretch"):
@@ -75,6 +79,46 @@ def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, filtered: pd.
         if b3.button("New dataset", icon=":material/upload_file:", width="stretch"):
             state.close_dashboard()
             st.rerun()
+
+
+def _swatches(colors: list[str]) -> str:
+    return "".join(f'<span style="display:inline-block;width:20px;height:20px;border-radius:5px;margin-right:4px;'
+                   f'background:{c};border:1px solid rgba(0,0,0,.12)"></span>' for c in colors)
+
+
+def _colours_menu(cfg: dict) -> None:
+    """Pick a colour style, then fine-tune the page, card, accent and chart colours. Changes apply immediately."""
+    did = cfg["id"]
+    cur = themes.clean_theme(cfg.get("theme")) or themes.from_preset(themes.DEFAULT)
+    # Widget keys include the current colours, so a change made elsewhere (e.g. by Dash) refreshes the pickers.
+    tag = abs(hash(repr(sorted(cur.items())))) % 10**8
+    names = list(themes.PRESETS) + (["Custom"] if cur["preset"] == "Custom" else [])
+    preset = st.selectbox("Style", names, index=names.index(cur["preset"]), key=f"thm_p_{did}_{tag}",
+                          format_func=lambda n: f"{n} (dark)" if n in themes.PRESETS and themes.is_dark(themes.PRESETS[n]["card_bg"]) else n)
+    if preset != cur["preset"] and preset in themes.PRESETS:
+        cfg["theme"] = themes.from_preset(preset)
+        st.rerun()
+    st.markdown(_swatches(cur["palette"]), unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    new = dict(cur)
+    new["accent"] = c1.color_picker("Accent", cur["accent"], key=f"thm_a_{did}_{tag}")
+    new["page_bg"] = c2.color_picker("Page", cur["page_bg"], key=f"thm_b_{did}_{tag}")
+    new["card_bg"] = c3.color_picker("Cards", cur["card_bg"], key=f"thm_c_{did}_{tag}")
+    st.caption("Chart colours — the first one is each chart's main colour.")
+    pal = list(cur["palette"]) + [cur["palette"][-1]] * (themes.PALETTE_SIZE - len(cur["palette"]))
+    cols = st.columns(4)
+    new["palette"] = [cols[i % 4].color_picker(f"Colour {i + 1}", pal[i], key=f"thm_s{i}_{did}_{tag}", label_visibility="collapsed")
+                      for i in range(themes.PALETTE_SIZE)]
+    changed = {k: v for k, v in new.items() if k != "preset" and v != cur[k] and (k != "palette" or v != pal)}
+    if changed:
+        cfg["theme"] = themes.clean_theme(dict(new, preset="Custom"))
+        st.rerun()
+    if st.button("Reset to Classic", key=f"thm_reset_{did}", icon=":material/format_color_reset:", width="stretch"):
+        cfg["theme"] = None
+        for c in cfg["charts"]:
+            c["color_hex"] = None
+        st.rerun()
+    st.caption("Tip: ask Dash (the robot, bottom-right) for a style, e.g. “make it calm and corporate”.")
 
 
 def _manage_menu(cfg: dict, profile: DatasetProfile, filtered: pd.DataFrame) -> None:
@@ -270,7 +314,7 @@ def _render_chart(spec: dict, data: pd.DataFrame, profile: DatasetProfile, did: 
             col_cfg = {c: st.column_config.NumberColumn(c, format="localized") for c in agg.columns if pd.api.types.is_numeric_dtype(agg[c])}
             st.dataframe(agg, width="stretch", hide_index=True, column_config=col_cfg, height=min(420, 38 + 35 * len(agg)))
         else:
-            fig = build_figure(agg, spec, profile, highlight=highlight)
+            fig = build_figure(agg, spec, profile, highlight=highlight, theme=st.session_state['dashboard'].get('theme'))
             key = f"chart_{did}_{spec['id']}_{st.session_state.get('select_epoch', 0)}"
             if _clickable(spec, profile):
                 st.plotly_chart(fig, key=key, width="stretch", config=PLOTLY_CONFIG, on_select=lambda: _cross_filter(key, spec, did),
@@ -382,6 +426,9 @@ def render_dashboard(cfg: dict) -> None:
             st.rerun()
         return
     df = result.df  # the original (cleaned) dataset — never modified
+    page_css = themes.page_css(cfg.get("theme"))
+    if page_css:
+        st.markdown(page_css, unsafe_allow_html=True)
 
     warns = st.session_state.get("open_warnings") or []
     filtered_header_placeholder = st.container()
@@ -455,3 +502,5 @@ def render_dashboard(cfg: dict) -> None:
     with st.expander(f"Data preview · {len(filtered):,} rows", icon=":material/table:"):
         st.dataframe(filtered.head(1000), width="stretch", height=380, column_config=date_column_config(filtered))
         st.caption("Showing up to 1,000 rows. Open the Data Explorer for search, column profiles and export.")
+
+    render_copilot(cfg, filtered, profile, len(df))

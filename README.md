@@ -111,8 +111,9 @@ ai-dashboard-builder/
 │   ├── storage.py            Local file storage with atomic writes
 │   ├── formatting.py
 │   ├── report_export.py      Standalone HTML export
-│   ├── agent/                AI Analyst: workflow, tools, LLM loop, guided assistant, memory, cleaning, planner
-│   └── ui/                   Streamlit pages (AI Analyst, dashboard, builder, explorer, settings), theme
+│   ├── agent/                AI Analyst + Dash: workflow, tools, LLM loops, guided assistants, memory, learning, cleaning, planner
+│   ├── themes.py             Dashboard colour styles
+│   └── ui/                   Streamlit pages (AI Analyst, dashboard, Dash chat, builder, explorer, settings), theme
 ├── tests/                    pytest suite + synthetic datasets
 ├── uploads/                  Uploaded files (git-ignored)
 └── saved_dashboards/         Dashboard JSON configs (git-ignored)
@@ -269,6 +270,41 @@ as usual, and **Back to AI analyst** returns to the conversation.
 **Benchmark.** `scripts\benchmark_agent.py <file>` prints what the analyst would ask and propose for any
 spreadsheet, without changing your library. `tests/synthetic.py: malaysian_sales_rows()` is a deliberately messy
 test report with cryptic codes, RM text, mixed date formats, inconsistent labels, duplicates and subtotal rows.
+
+## Dash, the dashboard assistant
+
+Every dashboard has **Dash**, an animated robot in the bottom-right corner (it wanders along the bottom of the page on
+wide screens). Click it to open a chat about the dashboard you're looking at:
+
+| You can… | Example | What happens |
+|---|---|---|
+| Ask about the data | "Which brand sells the most?" | Calculated with pandas on the rows currently shown (filters apply). *How I worked this out* lists each step. |
+| Ask for ideas | "Give me ideas" | Dash drafts 2–3 charts that aren't on the dashboard yet, checked against the data. **Add to dashboard** adds one. |
+| Change colours | "Make it calm and corporate", "dark mode" | Applies a colour style or custom colours. |
+| Teach it | "dept means Product Category", "I prefer horizontal bars" | Saved to Dash's memory and used next time. |
+
+Dash changes pose with what it's doing: waving while idle, a glowing brain while thinking, "aha!" after an answer,
+presenting when it has ideas, and celebrating after a change.
+
+- **AI or offline:** Dash uses the same AI choice as the analyst (switch it with the ⚙ button in the chat, which also
+  shows the usage counter). Without an AI it still answers questions, suggests charts, changes colours and learns word
+  meanings with built-in rules. Each AI answer usually takes 3–6 requests, because it looks things up before replying.
+- **Learning:** what Dash learns is stored per data layout (a signature of the column names) in
+  `saved_dashboards/assistant_knowledge.json`. A file with mostly the same columns, such as next month's report, reuses
+  it. The chat's ⚙ menu → *What I've learned* lists every note, each with a delete button. Learned word meanings also
+  help the offline question engine.
+- **Safety:** as everywhere else, the AI never produces numbers itself; chart ideas and colours are validated before
+  they're applied, and nothing is saved until you press **Save**.
+
+### Colours
+
+**Colours** in the dashboard header offers ready-made styles (Classic, Ocean, Sunset, Forest, Malaysia, Pastel,
+Midnight (dark) and Mono) plus pickers for the accent, page and card colours and the 8 chart colours. Each visual's
+⋮ menu has a **Main colour** picker for that chart alone. Colours are saved with the dashboard and included in the
+HTML export. Text colours adjust automatically, so dark styles stay readable.
+
+The robot artwork lives in `assets/buddy_sheet.jpg`. `scripts/make_buddy_sprites.py` cuts it into the animation strips
+in `static/buddy/`, which Streamlit serves because `enableStaticServing` is on in `.streamlit/config.toml`.
 
 ## Known limitations
 

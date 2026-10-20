@@ -10,6 +10,7 @@ from .chart_generator import AGGREGATIONS, MAX_COLOR_SERIES, agg_label
 from .config import SERIES_COLORS
 from .data_profiler import DATE, DatasetProfile
 from .formatting import format_value
+from .themes import mix, resolve, with_main_color
 
 INK = "#1c1f24"
 INK_2 = "#5b616b"
@@ -277,21 +278,23 @@ def _natural_key(v):
         return (1, 0.0, s.lower())
 
 
-def _style(fig: go.Figure, height: int, show_legend: bool) -> go.Figure:
+def _style(fig: go.Figure, height: int, show_legend: bool, theme: dict | None = None) -> go.Figure:
+    t = resolve(theme)
+    SURFACE, INK, INK_2, INK_3, GRID = t["card_bg"], t["ink"], t["ink2"], t["ink3"], t["grid"]  # noqa: N806
     fig.update_layout(
         height=height,
         margin=dict(l=8, r=8, t=8, b=8),
         paper_bgcolor=SURFACE, plot_bgcolor=SURFACE,
         font=dict(family="Inter, -apple-system, Segoe UI, Roboto, sans-serif", size=12, color=INK_2),
-        hoverlabel=dict(bgcolor="#ffffff", bordercolor="#d9dce1", font=dict(color=INK, size=12)),
+        hoverlabel=dict(bgcolor=SURFACE, bordercolor=t["line"], font=dict(color=INK, size=12)),
         showlegend=show_legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0, title_text="", font=dict(color=INK_2)),
-        colorway=SERIES_COLORS,
+        colorway=t["palette"],
         bargap=0.28,
         barcornerradius=4,
         uniformtext=dict(minsize=9, mode="hide"),
     )
-    fig.update_xaxes(showgrid=False, linecolor="#d9dce1", tickfont=dict(color=INK_3), title_font=dict(color=INK_2), zeroline=False, automargin=True)
+    fig.update_xaxes(showgrid=False, linecolor=t["line"], tickfont=dict(color=INK_3), title_font=dict(color=INK_2), zeroline=False, automargin=True)
     fig.update_yaxes(gridcolor=GRID, linecolor="rgba(0,0,0,0)", tickfont=dict(color=INK_3), title_font=dict(color=INK_2), zeroline=False, automargin=True)
     return fig
 
@@ -305,14 +308,14 @@ def _value_format(profile: DatasetProfile, y: str | None, agg: str) -> str:
     return ",.2f"
 
 
-def _color_map(data: pd.DataFrame, col: str) -> dict:
+def _color_map(data: pd.DataFrame, col: str, palette: list[str] = SERIES_COLORS, other: str = OTHER_COLOR) -> dict:
     cats = [c for c in pd.unique(data[col]) if c != OTHER]
-    cmap = {c: SERIES_COLORS[i % len(SERIES_COLORS)] for i, c in enumerate(cats)}
-    cmap[OTHER] = OTHER_COLOR
+    cmap = {c: palette[i % len(palette)] for i, c in enumerate(cats)}
+    cmap[OTHER] = other
     return cmap
 
 
-def _label_last_points(fig: go.Figure, vfmt: str) -> None:
+def _label_last_points(fig: go.Figure, vfmt: str, INK_2: str = INK_2) -> None:  # noqa: N803
     """Direct-label the final point of each line instead of labelling every point."""
     for tr in fig.data:
         xs, ys = list(tr.x), list(tr.y)
@@ -323,7 +326,11 @@ def _label_last_points(fig: go.Figure, vfmt: str) -> None:
 
 
 def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height: int = 340,
-                 highlight: list[str] | None = None) -> go.Figure:
+                 highlight: list[str] | None = None, theme: dict | None = None) -> go.Figure:
+    th = resolve(theme)
+    pal = with_main_color(th["palette"], spec.get("color_hex"))
+    SURFACE, INK_2, INK_3, GRID, SEQUENTIAL, OTHER_COLOR = (  # noqa: N806 - same names as the module defaults
+        th["card_bg"], th["ink2"], th["ink3"], th["grid"], th["sequential"], th["other"])
     t, x, y, color, agg = spec["type"], spec.get("x"), spec.get("y"), spec.get("color"), spec.get("agg", "sum")
     multi = bool(spec.get("extra")) and SERIES in data.columns
     legend_col = SERIES if multi else color
@@ -331,7 +338,7 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
     vfmt = _value_format(profile, y, agg)
     labels = bool(spec.get("labels"))
     barmode = spec.get("barmode", "group")
-    color_map = _color_map(data, legend_col) if legend_col and legend_col in data.columns else None
+    color_map = _color_map(data, legend_col, pal, OTHER_COLOR) if legend_col and legend_col in data.columns else None
 
     if t in ("line", "area"):
         if t == "area":
@@ -345,15 +352,15 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
         fig.update_traces(line=dict(width=2), marker=dict(size=7),
                           hovertemplate=f"%{{x|%b %d, %Y}}<br>{measure}: %{{y:{vfmt}}}<extra>{name}</extra>")
         if not legend_col:
-            fig.update_traces(line_color=SERIES_COLORS[0])
+            fig.update_traces(line_color=pal[0])
         fig.update_layout(hovermode="x unified" if legend_col else "closest")
         fig.update_xaxes(title_text=x)
         pct = t == "area" and barmode == "percent" and legend_col
         fig.update_yaxes(title_text="% of total" if pct else measure,
                          rangemode="tozero" if agg in ("sum", "count") and data["value"].min() >= 0 else "normal")
         if labels and t == "line":
-            _label_last_points(fig, vfmt)
-        return _style(fig, height, bool(legend_col))
+            _label_last_points(fig, vfmt, INK_2)
+        return _style(fig, height, bool(legend_col), theme)
 
     if t in ("bar", "hbar"):
         horizontal = t == "hbar"
@@ -368,7 +375,7 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
         mode = "group" if not legend_col or barmode == "group" else "relative"
         fig = px.bar(plot, color=legend_col, color_discrete_map=color_map, barmode=mode, **kwargs)
         if not legend_col:
-            fig.update_traces(marker_color=SERIES_COLORS[0])
+            fig.update_traces(marker_color=pal[0])
         cat_axis = "%{y}" if horizontal else "%{x}"
         val_axis = "%{x" if horizontal else "%{y"
         fmt = ".1f}%" if value_title == "% of total" else f"{vfmt}}}"
@@ -388,7 +395,7 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
         else:
             fig.update_xaxes(title_text="", type="category")
             fig.update_yaxes(title_text=value_title)
-        fig = _style(fig, height, bool(legend_col))
+        fig = _style(fig, height, bool(legend_col), theme)
         fig.update_layout(bargap=gap)
         if highlight:
             wanted = {str(v) for v in highlight}
@@ -412,10 +419,10 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
         fig.update_xaxes(type="category", title_text=x, side="bottom")
         fig.update_yaxes(type="category", title_text=x2, autorange="reversed", gridcolor="rgba(0,0,0,0)")
         height = max(height, min(800, 34 * len(pivot.index) + 110))
-        return _style(fig, height, False)
+        return _style(fig, height, False, theme)
 
     if t == "donut":
-        colors = [SERIES_COLORS[i % len(SERIES_COLORS)] if v != OTHER else OTHER_COLOR for i, v in enumerate(data[x])]
+        colors = [pal[i % len(pal)] if v != OTHER else OTHER_COLOR for i, v in enumerate(data[x])]
         fig = go.Figure(go.Pie(
             labels=data[x], values=data["value"], hole=0.62, sort=False, direction="clockwise",
             marker=dict(colors=colors, line=dict(color=SURFACE, width=2)),
@@ -423,7 +430,7 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
             insidetextorientation="horizontal",
             hovertemplate=f"%{{label}}<br>{measure}: %{{value:{vfmt}}}<br>%{{percent}} of total<extra></extra>",
         ))
-        fig = _style(fig, height, True)
+        fig = _style(fig, height, True, theme)
         fig.update_layout(legend=dict(orientation="v", x=1.02, y=0.5, yanchor="middle", xanchor="left"))
         return fig
 
@@ -435,35 +442,35 @@ def build_figure(data: pd.DataFrame, spec: dict, profile: DatasetProfile, height
         if not size:
             fig.update_traces(marker=dict(size=8))
         if not color:
-            fig.update_traces(marker_color=SERIES_COLORS[0])
+            fig.update_traces(marker_color=pal[0])
         fig.update_xaxes(title_text=x, showgrid=True, gridcolor=GRID)
         fig.update_yaxes(title_text=y)
-        return _style(fig, height, bool(color))
+        return _style(fig, height, bool(color), theme)
 
     if t == "histogram":
         fig = px.histogram(data, x=x, nbins=min(40, max(10, int(np.sqrt(len(data))))))
-        fig.update_traces(marker_color=SERIES_COLORS[0], marker_line=dict(color=SURFACE, width=1),
+        fig.update_traces(marker_color=pal[0], marker_line=dict(color=SURFACE, width=1),
                           hovertemplate=f"{x}: %{{x}}<br>Rows: %{{y:,}}<extra></extra>")
         if labels:
             fig.update_traces(texttemplate="%{y}", textposition="outside", textfont=dict(size=10, color=INK_2))
         fig.update_xaxes(title_text=x)
         fig.update_yaxes(title_text="Rows")
-        fig = _style(fig, height, False)
+        fig = _style(fig, height, False, theme)
         fig.update_layout(bargap=0.04, barcornerradius=2)
         return fig
 
     if t == "box":
         fig = px.box(data, x=x, y=y, points="outliers")
-        fig.update_traces(marker_color=SERIES_COLORS[0], line=dict(width=1.5), fillcolor="rgba(42,120,214,0.15)")
+        fig.update_traces(marker_color=pal[0], line=dict(width=1.5), fillcolor=mix(pal[0], SURFACE, 0.85))
         fig.update_xaxes(title_text=x or "", type="category" if x else None)
         fig.update_yaxes(title_text=y)
-        return _style(fig, height, False)
+        return _style(fig, height, False, theme)
 
     if t == "map":
         fig = px.scatter_map(data, lat=y, lon=x, color=color, color_discrete_map=color_map, zoom=1, map_style="carto-positron")
         if not color:
-            fig.update_traces(marker=dict(color=SERIES_COLORS[0], size=8))
-        return _style(fig, height, bool(color))
+            fig.update_traces(marker=dict(color=pal[0], size=8))
+        return _style(fig, height, bool(color), theme)
 
     raise ChartDataError(f"Unsupported chart type {t!r}.")
 

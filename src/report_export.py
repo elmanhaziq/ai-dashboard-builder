@@ -16,6 +16,7 @@ from .dashboard_service import compute_kpi, describe_filters
 from .data_profiler import DatasetProfile
 from .formatting import format_value
 from .insights import generate_insights
+from .themes import clean_theme, resolve
 
 _CSS = """
 :root { --ink:#1c1f24; --ink2:#5b616b; --ink3:#8a9099; --line:#e3e6ea; --surface:#fff; --canvas:#f6f7f9; --accent:#1f5fbf; }
@@ -70,6 +71,15 @@ def _table_html(frame: pd.DataFrame) -> str:
     return f'<table class="data"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table>'
 
 
+def _theme_css(theme: dict | None) -> str:
+    if clean_theme(theme) is None:
+        return ""
+    t = resolve(theme)
+    return (f"body{{background:{t['page_bg']};color:{t['page_ink']}}}h1,h2,.eyebrow,.foot{{color:{t['page_ink']}}}"
+            f".card,.kpi{{background:{t['card_bg']};color:{t['ink']};border-color:{t['line']}}}"
+            f".kpi{{border-top:3px solid {t['accent']}}}.chip.accent{{color:{t['accent']};border-color:{t['accent']}}}")
+
+
 def build_html_report(cfg: dict, data: pd.DataFrame, profile: DatasetProfile, total_rows: int) -> str:
     """Render the dashboard to a standalone HTML document. ``data`` is the (filtered) rows to report on."""
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -106,7 +116,7 @@ def build_html_report(cfg: dict, data: pd.DataFrame, profile: DatasetProfile, to
             if spec["type"] == "table":
                 body = _table_html(agg)
             else:
-                fig = build_figure(agg, spec, profile)
+                fig = build_figure(agg, spec, profile, theme=cfg.get("theme"))
                 body = fig.to_html(full_html=False, include_plotlyjs="inline" if not plotly_included else False,
                                    config={"displaylogo": False, "responsive": True})
                 plotly_included = True
@@ -120,7 +130,7 @@ def build_html_report(cfg: dict, data: pd.DataFrame, profile: DatasetProfile, to
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{_e(cfg.get("name", "Dashboard"))}</title><style>{_CSS}</style></head>
+<title>{_e(cfg.get("name", "Dashboard"))}</title><style>{_CSS}{_theme_css(cfg.get("theme"))}</style></head>
 <body><main class="wrap">
 <div class="eyebrow">Dashboard snapshot</div>
 <h1>{_e(cfg.get("name", "Dashboard"))}</h1>
