@@ -126,7 +126,7 @@ def test_llm_tools_calculate_draft_and_recolour(dash):
     llm = FakeLLM([
         {"tools": [("query_data", {"intent": "rank", "metric": "Sales", "metric2": "", "group_by": "Region",
                                    "aggregation": "sum", "top_n": 3, "order": "desc", "date_column": "", "time_grain": "",
-                                   "filters": []}),
+                                   "filters": [], "group_by_2": "", "compare_values": []}),
                    ("propose_chart", {"chart": {"type": "box", "x": "Region", "y": "Unit Price", "aggregation": "", "color": "",
                                                 "x2": "", "title": "Price spread by region", "why": ""},
                                       "reason": "Shows price differences", "add_now": False}),

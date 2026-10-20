@@ -4,6 +4,8 @@ from __future__ import annotations
 import streamlit as st
 
 from .. import config
+from ..structure import split_ref
+from .structure_view import table_picker
 from ..data_loader import DataLoadError, choose_default_sheet, list_sheets, sheet_dimensions, validate_upload
 from ..storage import StorageError
 from . import state
@@ -106,19 +108,28 @@ def render_staging(staging: dict) -> None:
     c1, c2 = st.columns([2, 1])
     with c1:
         if len(sheets) > 1:
-            default = staging.get("sheet") or choose_default_sheet({s: dims.get(s, (0, 0)) for s in sheets}) or sheets[0]
+            prev = split_ref(staging.get("sheet"))[0]
+            default = (prev if prev in sheets else None) or choose_default_sheet({s: dims.get(s, (0, 0)) for s in sheets}) or sheets[0]
             labels = {s: f"{s}  ·  ~{dims[s][0]:,} rows" if s in dims else s for s in sheets}
             sheet = st.selectbox("Worksheet", sheets, index=sheets.index(default), format_func=lambda s: labels[s])
         else:
             sheet = sheets[0]
             st.markdown(f'<div class="stat-line">Worksheet: <b>{esc(sheet)}</b></div>', unsafe_allow_html=True)
-    with c2:
-        header_choices = [_HEADER_AUTO] + [f"Row {i}" for i in range(1, 31)] + [_HEADER_NONE]
-        current = staging.get("header_row")
-        idx = 0 if current is None else (len(header_choices) - 1 if current == -1 else current + 1)
-        choice = st.selectbox("Header row", header_choices, index=idx,
-                              help="Which spreadsheet row contains the column names. Usually detected automatically.")
-    header_row = None if choice == _HEADER_AUTO else (-1 if choice == _HEADER_NONE else int(choice.split()[1]) - 1)
+    ref = table_picker(meta["id"], sheet, "staging")
+    if ref is None:
+        _staging_actions(can_generate=False)
+        return
+    if ref != sheet:  # a rebuilt table already knows its header rows
+        header_row = None
+    else:
+        with c2:
+            header_choices = [_HEADER_AUTO] + [f"Row {i}" for i in range(1, 31)] + [_HEADER_NONE]
+            current = staging.get("header_row")
+            idx = 0 if current is None else (len(header_choices) - 1 if current == -1 else current + 1)
+            choice = st.selectbox("Header row", header_choices, index=idx,
+                                  help="Which spreadsheet row contains the column names. Usually detected automatically.")
+        header_row = None if choice == _HEADER_AUTO else (-1 if choice == _HEADER_NONE else int(choice.split()[1]) - 1)
+    sheet = ref
     staging.update(sheet=sheet, header_row=header_row)
 
     try:

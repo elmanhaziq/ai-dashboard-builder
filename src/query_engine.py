@@ -27,6 +27,7 @@ from .insights import generate_insights, outlier_insight, period_label, period_s
 INTENTS = {
     "missing", "duplicates", "summary", "outliers", "trend", "correlation", "period_rank",
     "rank", "group_agg", "trends_outliers", "overall_agg", "count_rows", "count_distinct", "columns", "extreme_row",
+    "share", "growth", "pivot", "compare",
 }
 _NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
               "nine": 9, "ten": 10, "fifteen": 15, "twenty": 20}
@@ -53,6 +54,8 @@ class QueryPlan:
     date_col: str | None = None
     filters: dict[str, list[str]] = field(default_factory=dict)
     assumptions: list[str] = field(default_factory=list)
+    group2: str | None = None  # second category for two-way tables (pivot)
+    values: list[str] = field(default_factory=list)  # category values to compare (compare)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -254,6 +257,36 @@ class RuleBasedInterpreter:
                 raise NeedsClarification("Name the two numeric columns to compare, e.g. “correlation between Clicks and Conversions”.")
             plan.intent, plan.metric, plan.metric2 = "correlation", metrics[0], metrics[1]
             return plan
+        if re.search(r"\b(share|proportion|contribut\w*|percent(age)? of (the )?total|what percent)\b|% of", q) and groups:
+            plan.intent, plan.group = "share", groups[0]
+            plan.metric = self._pick_metric(metrics, profile, plan, allow_default=True)
+            plan.agg = "sum" if plan.metric else "count"
+            return plan
+        if re.search(r"\b(compare|versus|vs\.?)\b", q) and any(len(v) >= 2 for v in filters.values()):
+            col = next(c for c, v in filters.items() if len(v) >= 2)
+            plan.intent, plan.group, plan.values = "compare", col, filters.pop(col)
+            plan.metric = self._pick_metric(metrics, profile, plan, allow_default=True)
+            plan.agg = (agg if agg in ("sum", "mean", "median", "count") else None) or (
+                profile.columns[plan.metric].aggregation if plan.metric else "count")
+            return plan
+        if re.search(r"\b(growth rate|grew|month[- ]over[- ]month|year[- ]over[- ]year|mom|yoy|last month|"
+                     r"previous (month|quarter|year)|vs\.? last|compared (to|with) (the )?(last|previous|prior))\b", q):
+            if not date_col:
+                raise NeedsClarification("This dataset has no date column, so growth can't be calculated.")
+            plan.intent, plan.date_col = "growth", date_col
+            plan.time_grain = _TIME_WORDS.get(time_word or "", None) or ("Y" if re.search(r"year|yoy", q) else "M")
+            plan.metric = self._pick_metric(metrics, profile, plan, allow_default=True)
+            plan.agg = (agg if agg in ("sum", "mean", "median", "count") else None) or (
+                profile.columns[plan.metric].aggregation if plan.metric else "count")
+            plan.group = groups[0] if groups else None
+            return plan
+        if len(groups) >= 2 and not re.search(r"\b(top|bottom|highest|lowest|most|least|rank)\b", q) \
+                and re.search(r"\b(by|per|across)\b.*\b(and|by|per)\b", q):
+            plan.intent, plan.group, plan.group2 = "pivot", groups[0], groups[1]
+            plan.metric = self._pick_metric(metrics, profile, plan, allow_default=True)
+            plan.agg = (agg if agg in ("sum", "mean", "median", "count") else None) or (
+                profile.columns[plan.metric].aggregation if plan.metric else "count")
+            return plan
         if re.search(r"\btrends?\b|over time|grow|growth|declin|increas|decreas|change over", q):
             if not date_col:
                 raise NeedsClarification("This dataset has no date column, so trends over time cannot be calculated.")
@@ -371,8 +404,17 @@ def _validate_plan(plan: QueryPlan, profile: DatasetProfile) -> None:
     for col in (plan.metric, plan.metric2):
         if col is not None and (col not in profile.columns or profile.columns[col].role != METRIC):
             raise NeedsClarification(f"'{col}' is not a numeric column.")
-    if plan.group is not None and plan.group not in profile.columns:
-        raise NeedsClarification(f"Unknown column '{plan.group}'.")
+    for col in (plan.group, plan.group2):
+        if col is not None and col not in profile.columns:
+            raise NeedsClarification(f"Unknown column '{col}'.")
+    if plan.intent in ("share", "pivot", "compare") and plan.group is None:
+        raise NeedsClarification("Name the category to split by, e.g. “share of sales by region”.")
+    if plan.intent == "pivot" and (plan.group2 is None or plan.group2 == plan.group):
+        raise NeedsClarification("A two-way table needs two different categories, e.g. “sales by region and product”.")
+    if plan.intent == "compare" and len(plan.values) < 2:
+        raise NeedsClarification(f"Name at least two values of '{plan.group}' to compare.")
+    if plan.intent == "growth" and plan.date_col is None:
+        raise NeedsClarification("Growth needs a date column, and this dataset has none.")
     if plan.date_col is not None and (plan.date_col not in profile.columns or profile.columns[plan.date_col].role != DATE):
         raise NeedsClarification(f"'{plan.date_col}' is not a date column.")
     if plan.agg not in AGGREGATIONS:
@@ -529,6 +571,9 @@ def execute_plan(plan: QueryPlan, df: pd.DataFrame, profile: DatasetProfile) -> 
         return QueryResult(True, ans + filter_note + notes, table=t, method=f"{measure} grouped by '{label}' with pandas groupby.",
                            chart={"kind": "hbar", "x": label, "y": measure, "title": f"{measure} by {label}", "data": chart_data}, plan=plan.to_dict())
 
+    if i in ("share", "growth", "pivot", "compare"):
+        return _analytic(i, plan, data, profile, measure, filter_note + notes)
+
     if i == "overall_agg":
         v = pd.to_numeric(data[plan.metric], errors="coerce")
         val = float(getattr(v.dropna(), plan.agg)()) if plan.agg != "nunique" else float(v.nunique())
@@ -557,6 +602,130 @@ def execute_plan(plan: QueryPlan, df: pd.DataFrame, profile: DatasetProfile) -> 
         return QueryResult(True, f"There are **{k:,}** distinct '{col}' values.{filter_note}", table=t, method=f"nunique() of '{col}'.", plan=plan.to_dict())
 
     return QueryResult(False, _rephrase_message(profile), plan=plan.to_dict())
+
+
+def _keys(data: pd.DataFrame, col: str) -> pd.Series:
+    return data[col].map(lambda v: "(blank)" if pd.isna(v) else str(v))
+
+
+def _grouped(data: pd.DataFrame, by, plan: QueryPlan) -> pd.Series:
+    g = data.groupby(by, observed=True)
+    return g.size().astype(float) if plan.agg == "count" or not plan.metric else g[plan.metric].agg(plan.agg)
+
+
+def _pct(a: float, b: float) -> float | None:
+    return None if not b else (a - b) / abs(b) * 100
+
+
+_GRAIN_WORD = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+_PER_YEAR = {"M": 12, "Q": 4, "W": 52}
+
+
+def _analytic(i: str, plan: QueryPlan, data: pd.DataFrame, profile: DatasetProfile, measure: str, tail: str) -> QueryResult:
+    """Share of total, growth vs the previous period, two-way tables and A-vs-B comparisons."""
+    if i == "share":
+        if plan.metric and profile.columns[plan.metric].aggregation == "mean" and plan.agg != "count":
+            raise NeedsClarification(f"'{plan.metric}' is a rate or average, so its values don't add up to a total. "
+                                     "Ask for its average by group instead.")
+        if plan.agg not in ("sum", "count"):
+            plan.agg = "sum" if plan.metric else "count"
+            measure = agg_label(plan.agg, plan.metric)
+        s = _grouped(data, _keys(data, plan.group), plan).dropna().sort_values(ascending=False)
+        total = float(s.sum())
+        if s.empty or total == 0:
+            return QueryResult(False, "There is nothing to divide into shares.", plan=plan.to_dict())
+        pct = s / total * 100
+        t = pd.DataFrame({plan.group: s.index, measure: s.values, "Share %": pct.round(1).values}).head(50)
+        ans = (f"**{s.index[0]}** has the largest share of {measure}: **{pct.iloc[0]:.1f}%** "
+               f"({_f(s.iloc[0])} of {_f(total)}).")
+        if len(s) > 3:
+            k80 = int((pct.cumsum() < 80).sum()) + 1
+            ans += f" The top {k80} of {len(s)} '{plan.group}' values make up 80% of the total."
+        return QueryResult(True, ans + tail, table=t, method=f"{measure} per '{plan.group}' divided by the overall total.",
+                           chart={"kind": "hbar", "x": plan.group, "y": "Share %", "title": f"Share of {measure} by {plan.group}",
+                                  "data": t.head(15)}, plan=plan.to_dict())
+
+    if i == "growth":
+        grain = plan.time_grain or "M"
+        word = _GRAIN_WORD[grain]
+        d = data.dropna(subset=[plan.date_col])
+        per = d[plan.date_col].dt.to_period(grain)
+        s = _grouped(d, per, plan).sort_index()
+        if len(s) < 2:
+            return QueryResult(False, f"There is only one {word} of data, so growth can't be measured.", plan=plan.to_dict())
+        last, prev = s.index[-1], s.index[-2]
+        ch = _pct(float(s[last]), float(s[prev]))
+        diff = float(s[last] - s[prev])
+        direction = "up" if diff > 0 else "down" if diff < 0 else "unchanged"
+        ans = (f"{measure} in **{period_label(last)}** was **{_f(s[last])}**, {direction} "
+               + (f"**{abs(ch):.1f}%** " if ch is not None and diff else "")
+               + f"from {period_label(prev)} ({_f(s[prev])}).")
+        if grain in _PER_YEAR and (last - _PER_YEAR[grain]) in s.index:
+            ly = last - _PER_YEAR[grain]
+            yoy = _pct(float(s[last]), float(s[ly]))
+            if yoy is not None:
+                ans += f" Compared with the same {word} last year ({period_label(ly)}): {yoy:+.1f}%."
+        if d[plan.date_col].max() < last.end_time.normalize():
+            ans += (f" Note: the data ends on {d[plan.date_col].max():%Y-%m-%d}, so {period_label(last)} may be "
+                    "incomplete.")
+        t = pd.DataFrame({word.title(): [period_label(p) for p in s.index], measure: s.values,
+                          "Change": s.diff().values, "Change %": (s.pct_change() * 100).round(1).values})
+        if plan.group:
+            g = _grouped(d, [per, _keys(d, plan.group)], plan).unstack(fill_value=0)
+            if prev in g.index and last in g.index:
+                mv = (g.loc[last] - g.loc[prev]).sort_values()
+                ups = [f"{k} ({_f(v)})" for k, v in mv[::-1].items() if v > 0][:3]
+                downs = [f"{k} ({_f(v)})" for k, v in mv.items() if v < 0][:3]
+                if ups:
+                    ans += f" Biggest increases by {plan.group}: {', '.join(ups)}."
+                if downs:
+                    ans += f" Biggest drops: {', '.join(downs)}."
+        return QueryResult(True, ans + tail, table=t.tail(24), method=f"{measure} per {word} of '{plan.date_col}', "
+                           "latest period compared with the one before.",
+                           chart={"kind": "line", "x": word.title(), "y": measure, "title": f"{measure} by {word}"},
+                           plan=plan.to_dict())
+
+    if i == "pivot":
+        k1, k2 = _keys(data, plan.group), _keys(data, plan.group2)
+        top1 = _grouped(data, k1, plan).sort_values(ascending=False).index[:12]
+        top2 = _grouped(data, k2, plan).sort_values(ascending=False).index[:8]
+        sub = data[k1.isin(top1) & k2.isin(top2)]
+        p = _grouped(sub, [_keys(sub, plan.group), _keys(sub, plan.group2)], plan).unstack()
+        p = p.reindex(index=[x for x in top1 if x in p.index], columns=[x for x in top2 if x in p.columns])
+        if p.empty:
+            return QueryResult(False, "No combinations to show.", plan=plan.to_dict())
+        stacked = p.stack().dropna()
+        (a, b), v = stacked.idxmax(), stacked.max()
+        ans = (f"{measure} by **{plan.group}** and **{plan.group2}**. The largest combination is **{a} × {b}** "
+               f"({_f(v)}).")
+        if len(top1) == 12 or len(top2) == 8:
+            ans += " Showing the biggest groups only."
+        p.index.name, p.columns.name = plan.group, None
+        t = p.round(2).reset_index()
+        return QueryResult(True, ans + tail, table=t, method=f"{measure} grouped by '{plan.group}' and '{plan.group2}' "
+                           "(a two-way table).", plan=plan.to_dict())
+
+    # compare
+    keys = _keys(data, plan.group)
+    wanted = {v.casefold() for v in plan.values}
+    found = {k for k in keys.unique() if k.casefold() in wanted}
+    if len(found) < 2:
+        return QueryResult(False, f"I couldn't find at least two of {', '.join(plan.values)} in '{plan.group}'.",
+                           plan=plan.to_dict())
+    sub = data[keys.isin(found)]
+    s = _grouped(sub, _keys(sub, plan.group), plan).sort_values(ascending=False)
+    rows = _keys(sub, plan.group).value_counts()
+    t = pd.DataFrame({plan.group: s.index, measure: s.values, "Rows": [int(rows.get(k, 0)) for k in s.index]})
+    a, b = s.index[0], s.index[1]
+    ch = _pct(float(s[a]), float(s[b]))
+    ans = f"**{a}**: {_f(s[a])} vs **{b}**: {_f(s[b])} — {a} is higher by {_f(s[a] - s[b])}"
+    ans += f" ({ch:.1f}% more)." if ch is not None else "."
+    missing = [v for v in plan.values if v.casefold() not in {f.casefold() for f in found}]
+    if missing:
+        ans += f" Not found: {', '.join(missing)}."
+    return QueryResult(True, ans + tail, table=t, method=f"{measure} for each chosen '{plan.group}' value.",
+                       chart={"kind": "hbar", "x": plan.group, "y": measure, "title": f"{measure}: comparison"},
+                       plan=plan.to_dict())
 
 
 def _by_period(data: pd.DataFrame, plan: QueryPlan) -> tuple[pd.Series, str, bool]:

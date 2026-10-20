@@ -51,9 +51,10 @@ create_dashboard_plan → validate_dashboard_plan (fix any errors) → execute_d
 - Questions about the data can come at any time. Work like an analyst: translate the user's words into real columns \
 yourself (if they say "department" and there is no such column, pick the closest category such as "Product Category" \
 and say so; if "sales" could mean several columns, choose the most sensible one, e.g. net sales, and mention it). Use \
-query_data for precise calculations — several calls if needed — and get_insights for open questions such as "what \
+query_data for precise calculations — several calls if needed; its share, growth, pivot and compare intents answer "what share", "growth vs last month/year", "X by A and B" and "A vs B" questions — and get_insights for open questions such as "what \
 is this data about", "what should I highlight", or "good news and bad news". Combine the results into a short, clear \
 answer: lead with the finding, then 2–4 supporting numbers, then one suggested follow-up question.
+- The table you work on may have been rebuilt from a messy sheet (titles removed, header rows combined, records flipped, month columns turned into rows); inspect_dataset's table_layout and loading notes say so. Mention it when it matters, and use the confidence levels in column_confidence: ask about Low ones before relying on them.
 - After the dashboard exists, also change it with update_dashboard when the user asks.
 - A greeting or small talk needs a short friendly reply and an offer of what you can do — not a tool call.
 """

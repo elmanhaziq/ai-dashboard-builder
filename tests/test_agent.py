@@ -599,22 +599,22 @@ def test_query_data_lets_the_model_choose_columns(mctx):
     work, _ = mctx.working()
     res, err = run_tool(mctx, "query_data", {"intent": "rank", "metric": "Net revenue", "metric2": "", "group_by": "Region",
                                              "aggregation": "sum", "top_n": 1, "order": "desc", "date_column": "", "time_grain": "",
-                                             "filters": []})
+                                             "filters": [], "group_by_2": "", "compare_values": []})
     best = work.groupby("Region")["Net revenue"].sum().idxmax()
     assert not err and best in res["result"]
     # original (pre-rename) names work too, and filters restrict rows
     res, err = run_tool(mctx, "query_data", {"intent": "overall_agg", "metric": "REV_NET", "metric2": "", "group_by": "",
                                              "aggregation": "sum", "top_n": 0, "order": "desc", "date_column": "", "time_grain": "",
-                                             "filters": [{"column": "Region", "values": ["Central"]}]})
+                                             "filters": [{"column": "Region", "values": ["Central"]}], "group_by_2": "", "compare_values": []})
     expected = work.loc[work["Region"] == "Central", "Net revenue"].sum()
     assert not err and f"{expected:,.2f}" in res["result"]
     res, err = run_tool(mctx, "query_data", {"intent": "period_rank", "metric": "Net revenue", "metric2": "", "group_by": "",
                                              "aggregation": "sum", "top_n": 1, "order": "desc", "date_column": "", "time_grain": "",
-                                             "filters": []})
+                                             "filters": [], "group_by_2": "", "compare_values": []})
     assert not err and "month" in res["method"]
     res, err = run_tool(mctx, "query_data", {"intent": "rank", "metric": "Net revenue", "metric2": "", "group_by": "Department",
                                              "aggregation": "sum", "top_n": 1, "order": "desc", "date_column": "", "time_grain": "",
-                                             "filters": []})
+                                             "filters": [], "group_by_2": "", "compare_values": []})
     assert err and "Available columns" in res["error"]
 
 

@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from ..structure import display_sheet
 from ..chart_renderer import ChartDataError, _style, build_figure, prepare_chart_data
 from .. import config
 from ..config import SERIES_COLORS
@@ -48,10 +49,12 @@ def _render_header(cfg: dict, meta: dict, profile: DatasetProfile, filtered: pd.
         st.markdown(f"# {esc(cfg['name'])}")
         items = [(meta["original_name"], ""), ]
         if cfg.get("sheet") and cfg["sheet"] != "CSV data":
-            items.append((f"Sheet: {cfg['sheet']}", ""))
+            items.append((f"Sheet: {display_sheet(cfg['sheet'])}", ""))
         items.append((f"{profile.n_rows:,} rows · {profile.n_cols} columns", ""))
         if n_filtered != profile.n_rows:
             items.append((f"{n_filtered:,} rows after filters", "accent"))
+        if cfg.get("cleaning_ops"):
+            items.append((f"Built from cleaned data · {len(cfg['cleaning_ops'])} approved fix(es)", "accent"))
         items.append(("Unsaved changes", "warn") if state.is_dirty() else ("Saved", ""))
         chips(items)
         analysis = cfg.get("analysis")

@@ -7,6 +7,7 @@ Rules: missing numbers are never filled with zero, and records are never removed
 from __future__ import annotations
 
 import hashlib
+import re
 
 import numpy as np
 import pandas as pd
@@ -183,6 +184,42 @@ def issue_cells(df: pd.DataFrame, issues: list[dict]) -> list[dict]:
     return out
 
 
+def _label_variants(df: pd.DataFrame, profile: DatasetProfile) -> tuple[int, int]:
+    """(cells written as a variant of a more common spelling, cells checked) over category columns."""
+    bad = checked = 0
+    for col, cp in profile.columns.items():
+        if cp.role != DIMENSION or col not in df.columns or not (1 < cp.unique <= 500):
+            continue
+        s = df[col].dropna().astype(str)
+        checked += len(s)
+        keys = s.map(lambda v: " ".join(v.split()).casefold())
+        for _, grp in s.groupby(keys):
+            counts = grp.value_counts()
+            if len(counts) > 1:
+                bad += int(counts.iloc[1:].sum())
+    return bad, checked
+
+
+def quality_score(df: pd.DataFrame, profile: DatasetProfile) -> dict:
+    """A 0–100 data quality score from four plain checks (higher is better).
+
+    completeness = filled cells · uniqueness = rows that aren't exact copies · consistency = category values written
+    one way · naming = columns with a real header. Weighted 40/25/25/10."""
+    n, cols = len(df), max(1, len(df.columns))
+    cells = max(1, n * cols)
+    completeness = 1 - float(df.isna().sum().sum()) / cells
+    uniqueness = 1 - (float(df.duplicated().sum()) / n if n else 0.0)
+    bad, checked = _label_variants(df, profile)
+    consistency = 1 - (bad / checked if checked else 0.0)
+    auto = sum(bool(re.fullmatch(r"(column|unnamed)[ _:]*\d+", str(c).strip(), re.I)) for c in df.columns)
+    naming = 1 - auto / cols
+    score = round(100 * (0.4 * completeness + 0.25 * uniqueness + 0.25 * consistency + 0.1 * naming))
+    grade = "Excellent" if score >= 90 else "Good" if score >= 75 else "Fair" if score >= 60 else "Poor"
+    return {"score": int(score), "grade": grade,
+            "parts": {"Filled cells": round(completeness * 100, 1), "Unique rows": round(uniqueness * 100, 1),
+                      "Consistent labels": round(consistency * 100, 1), "Named columns": round(naming * 100, 1)}}
+
+
 def chosen_ops(issues: list[dict]) -> list[dict]:
     """Operations the user approved, in a safe order (labels → fills → exclusions → duplicates)."""
     rank = {"normalize_text": 0, "fill_unknown": 1, "fill_median": 1, "fill_mean": 1, "exclude_missing": 2,
@@ -194,4 +231,4 @@ def chosen_ops(issues: list[dict]) -> list[dict]:
     return sorted(ops, key=lambda o: rank.get(o["op"], 9))
 
 
-__all__ = ["detect_issues", "chosen_ops", "issue_cells", "np"]
+__all__ = ["detect_issues", "chosen_ops", "issue_cells", "quality_score", "np"]

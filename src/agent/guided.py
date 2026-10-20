@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from ..structure import display_sheet
 from ..formatting import format_value
 from .actions import all_decided, decisions_summary
 from .ambiguity import readable
@@ -94,7 +95,7 @@ def start(ctx: AgentContext) -> None:
         return
     insp, _ = run_tool(ctx, "inspect_dataset", {})
     unclear = insp.get("unclear_columns", [])
-    lines = [f"I've read **{m.dataset_name}**" + (f" (sheet “{m.sheet}”)" if m.sheet and m.sheet != "CSV data" else "")
+    lines = [f"I've read **{m.dataset_name}**" + (f" ({display_sheet(m.sheet)})" if m.sheet and m.sheet != "CSV data" else "")
              + f": {insp['rows']:,} rows and {insp['columns']} columns."]
     if insp.get("loading_notes"):
         lines.append(f"While reading it I tidied up a few layout issues ({len(insp['loading_notes'])} notes); I'll explain them when we review data quality.")

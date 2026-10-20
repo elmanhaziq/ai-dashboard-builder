@@ -20,7 +20,7 @@ from ..query_engine import answer_question
 from . import cleaning as cl
 from .context import AgentContext
 from .planner import OBJECTIVES, PlanError, build_dashboard_config, classify_objective, suggest_plan, validate_plan
-from .quality import chosen_ops, detect_issues
+from .quality import chosen_ops, detect_issues, quality_score
 from .workflow import Stage, WorkflowError, go_back, sync, tools_for
 
 MAX_RESULT_CHARS = 7000
@@ -140,13 +140,41 @@ def t_inspect_dataset(ctx: AgentContext, args: dict) -> dict:
     r = ctx.original
     m = ctx.memory
     return {
-        "dataset": m.dataset_name, "sheet": m.sheet, "rows": profile.n_rows, "columns": profile.n_cols,
+        "dataset": m.dataset_name, "sheet": _display(m.sheet), "rows": profile.n_rows, "columns": profile.n_cols,
         "duplicate_rows": profile.duplicate_rows, "missing_cells_pct": round(profile.missing_pct, 1),
         "column_summaries": [_column_summary(ctx, c) for c in profile.columns][:60],
         "loading_notes": r.warnings[:10],
         "unclear_columns": [a["column"] for a in m.ambiguous if a["column"] not in m.interpretations],
+        "column_confidence": _confidences(ctx),
+        "table_layout": _layout_note(m.sheet),
+        "data_quality": quality_score(df, profile),
         "objective": m.objective or None, "stage": m.stage,
     }
+
+
+def _confidences(ctx: AgentContext) -> dict[str, str]:
+    from .ambiguity import column_confidence
+
+    m = ctx.memory
+    amb = {a["column"]: a for a in m.ambiguous}
+    prof = ctx.original_profile
+    return {c: column_confidence(cp, amb, m.interpretations.get(c))[0] for c, cp in list(prof.columns.items())[:60]}
+
+
+def _display(sheet: str | None) -> str | None:
+    from ..structure import display_sheet
+
+    return display_sheet(sheet) if sheet else sheet
+
+
+def _layout_note(sheet: str | None) -> str:
+    from ..structure import display_sheet, split_ref
+
+    name, spec = split_ref(sheet)
+    if not spec:
+        return "An ordinary table read from the whole worksheet."
+    return (f"Rebuilt from part of the worksheet: {display_sheet(sheet)}. The loading notes say what was changed "
+            "(header rows combined, records flipped, period columns turned into rows).")
 
 
 def t_get_column_profile(ctx: AgentContext, args: dict) -> dict:
@@ -295,6 +323,7 @@ def t_propose_cleaning_operations(ctx: AgentContext, args: dict) -> dict:
     if not needing:
         m.cleaning_reviewed = True
     return {"issues": [_issue_view(i) for i in issues][:20], "needing_approval": len(needing),
+            "data_quality_now": quality_score(r.df, ctx.original_profile),
             "note": "Explain the important ones simply, then call request_cleaning_approval. Never fill missing numbers with zero."}
 
 
@@ -446,7 +475,7 @@ def t_answer_data_question(ctx: AgentContext, args: dict) -> dict:
 
 
 QUERY_INTENTS = ["group_agg", "rank", "overall_agg", "period_rank", "trend", "count_rows", "count_distinct",
-                 "correlation", "missing", "outliers", "extreme_row", "duplicates"]
+                 "correlation", "missing", "outliers", "extreme_row", "duplicates", "share", "growth", "pivot", "compare"]
 
 
 def _resolve_column(ctx: AgentContext, profile, name: str) -> str | None:
@@ -471,7 +500,7 @@ def t_query_data(ctx: AgentContext, args: dict) -> dict:
     group = _resolve_column(ctx, profile, args["group_by"])
     date_col = _resolve_column(ctx, profile, args["date_column"])
     grain = args["time_grain"] or None
-    if (grain or args["intent"] in ("trend", "period_rank")) and not date_col:
+    if (grain or args["intent"] in ("trend", "period_rank", "growth")) and not date_col:
         date_col = next(iter(profile.date_columns), None)
         if date_col is None:
             raise ToolError("This dataset has no date column, so time-based questions can't be answered.")
@@ -487,9 +516,12 @@ def t_query_data(ctx: AgentContext, args: dict) -> dict:
         agg = "count"
     if args["intent"] == "count_distinct" and not group:
         group = metric
+    group2 = _resolve_column(ctx, profile, args["group_by_2"])
+    if args["intent"] == "growth" and not grain:
+        grain = "M"
     plan = QueryPlan(intent=args["intent"], metric=metric, metric2=metric2, group=group, agg=agg,
                      n=max(1, min(50, args["top_n"] or 5)), order=args["order"], time_grain=grain, date_col=date_col,
-                     filters=filters)
+                     filters=filters, group2=group2, values=[str(v) for v in args["compare_values"][:10]])
     try:
         res = execute_plan(plan, df, profile)
     except NeedsClarification as exc:
@@ -612,9 +644,14 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          "(e.g. 'department' → the closest category column such as 'Product Category'; 'sales' → 'Net Sales (RM)'), "
          "and say which columns you used. intent: group_agg (value per group), rank (top/bottom N groups), "
          "overall_agg (one total/average), period_rank (best/worst month etc.), trend, count_rows, count_distinct, "
-         "correlation (metric vs metric2), missing, outliers, extreme_row, duplicates. Use '' for unused text fields and 0 "
-         "for top_n when not ranking. filters: [{column, values}] to restrict rows.",
-         _obj({"intent": _enum(QUERY_INTENTS), "metric": S, "metric2": S, "group_by": S,
+         "correlation (metric vs metric2), missing, outliers, extreme_row, duplicates, "
+         "share (each group's % of the total and how many groups make 80%), "
+         "growth (latest period vs the previous one and vs last year; with group_by also the biggest movers), "
+         "pivot (a two-way table: group_by × group_by_2), compare (group_by values listed in compare_values, e.g. "
+         "two regions). Use '' for unused text fields, [] for unused lists and 0 for top_n when not ranking. "
+         "filters: [{column, values}] to restrict rows.",
+         _obj({"intent": _enum(QUERY_INTENTS), "metric": S, "metric2": S, "group_by": S, "group_by_2": S,
+               "compare_values": _arr(S),
                "aggregation": _enum(["sum", "mean", "median", "min", "max", "count", "nunique"]),
                "top_n": I, "order": _enum(["desc", "asc"]), "date_column": S, "time_grain": _enum(["", "D", "W", "M", "Q", "Y"]),
                "filters": _arr(_obj({"column": S, "values": _arr(S)}))}), t_query_data),

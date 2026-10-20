@@ -4,6 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ..structure import display_sheet
 from .. import config
 from ..dashboard_service import apply_filters, describe_filters
 from ..data_loader import DataLoadError
@@ -72,7 +73,7 @@ def dashboards_page() -> None:
             with c1:
                 tag = " · open now" if current and current.get("id") == d["id"] else ""
                 st.markdown(f"**{esc(d['name'])}**{tag}")
-                sheet = f" · sheet {d['sheet']}" if d.get("sheet") and d["sheet"] != "CSV data" else ""
+                sheet = f" · sheet {display_sheet(d['sheet'])}" if d.get("sheet") and d["sheet"] != "CSV data" else ""
                 st.caption(f"{d.get('dataset_name') or 'Dataset'}{sheet} · {d['n_kpis']} KPIs · {d['n_charts']} charts · "
                            f"updated {str(d.get('updated_at') or '')[:16].replace('T', ' ')} UTC")
             with c2:
@@ -118,30 +119,64 @@ def dashboards_page() -> None:
                         st.rerun()
 
 
+def _explorer_sources(cfg, staging, sess) -> dict[str, str]:
+    out = {}
+    if sess:
+        out["analysis"] = "Cleaned data from the AI analysis"
+    if cfg:
+        out["dashboard"] = f"Dashboard: {cfg['name'][:40]}"
+    elif staging:
+        out["staging"] = "Uploaded file (not cleaned yet)"
+    return out
+
+
 def explorer_page() -> None:
+    from ..agent.quality import quality_score
+
     cfg = state.current_dashboard()
     staging = st.session_state.get("staging")
-    source = cfg or staging
-    if not source:
+    sess = st.session_state.get("analysis")
+    sources = _explorer_sources(cfg, staging, sess)
+    if not sources:
         page_header("Data", "Data explorer")
         st.write("")
-        empty_state("No dataset open", "Open a dashboard or upload a file on the Overview page.")
+        empty_state("No dataset open", "Start an AI analysis, open a dashboard, or upload a file on the Dashboard page.")
         return
+    kind = next(iter(sources))
+    if len(sources) > 1:
+        kind = st.segmented_control("Data source", list(sources), format_func=sources.get, default=kind,
+                                    key="explorer_source") or kind
+    log: list[dict] = []
     try:
-        if cfg:
+        if kind == "analysis":
+            from .analyst_view import _context
+
+            ctx = _context(sess)
+            df, profile = ctx.working()
+            result = ctx.original
+            meta = state.get_storage().get_dataset(sess["dataset_id"])
+            log = ctx.memory.transformations
+        elif kind == "dashboard":
             meta, result, profile, _ = state.load_dashboard_data(cfg)
+            df = result.df
         else:
-            meta, result, profile = state.load_for(source["dataset_id"], source.get("sheet"), source.get("header_row"))
+            meta, result, profile = state.load_for(staging["dataset_id"], staging.get("sheet"), staging.get("header_row"))
+            df = result.df
     except (StorageError, DataLoadError) as exc:
         st.error(str(exc))
         return
-    df = result.df
-    page_header("Data", "Data explorer", f"{meta['original_name']} · {result.sheet}")
+    page_header("Data", "Data explorer", f"{meta['original_name']} · {display_sheet(result.sheet)}")
+    if kind == "analysis":
+        st.caption("This is the working copy your AI analysis uses: the clean-up you approved is applied. "
+                   "Your original file is unchanged.")
+    q = quality_score(df, profile)
+    cfg = cfg if kind == "dashboard" else None
     use_filters = False
     if cfg and (cfg["filters"]["categorical"] or cfg["filters"]["date"]):
         use_filters = st.toggle(f"Apply dashboard filters ({describe_filters(cfg['filters'])})", value=False)
     data = apply_filters(df, cfg["filters"], profile) if use_filters else df
     chips([(f"{len(data):,} rows", "accent"), (f"{profile.n_cols} columns", ""),
+           (f"Data quality {q['score']}/100 · {q['grade']}", "" if q["score"] >= 75 else "warn"),
            (f"{profile.duplicate_rows:,} duplicate rows", "warn" if profile.duplicate_rows else ""),
            (f"{profile.missing_pct:.1f}% cells missing", "warn" if profile.missing_pct > 5 else "")])
     st.write("")
@@ -193,6 +228,11 @@ def explorer_page() -> None:
             st.dataframe(pd.DataFrame(cp.top_values, columns=[col, "Rows"]), hide_index=True, width="content")
 
     with tab_notes:
+        if log:
+            st.markdown("**Changes you approved in the AI analysis**")
+            st.dataframe(pd.DataFrame([{"Change": t["description"], "Rows affected": t["rows_affected"],
+                                        "Why": t.get("reason", "")} for t in log]), hide_index=True, width="stretch")
+            st.markdown("**When the file was read**")
         notes = result.warnings + profile.warnings
         if notes:
             for n in notes:

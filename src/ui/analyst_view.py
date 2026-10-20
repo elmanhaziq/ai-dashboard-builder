@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -20,6 +21,8 @@ from ..storage import StorageError
 from . import state
 from . import buddy
 from .sheet_view import render_sheet
+from .structure_view import table_picker
+from ..structure import display_sheet
 from .theme import card, chips, empty_state, esc, human_size, page_header
 
 SESSION_KEY = "analysis"
@@ -193,6 +196,19 @@ def _ai_notice(status: dict) -> None:
             "AI (Ollama on your computer, or a Google Gemini key).</div>", unsafe_allow_html=True)
 
 
+SAMPLE_FILE = Path(__file__).resolve().parents[2] / "sample_data" / "extremely_messy_workbook.xlsx"
+
+
+def _stage_upload(name: str, data: bytes, ext: str, sample: bool = False) -> None:
+    """Save an upload and remember it as the file waiting for 'Start analysis'."""
+    sheets = list_sheets(data, ext)
+    meta = state.get_storage().save_upload(name, data, ext)
+    dims = sheet_dimensions(data, ext)
+    st.session_state["analyst_pending"] = {
+        "dataset_id": meta["id"], "name": meta["original_name"], "size": meta["size"], "sheets": sheets, "sample": sample,
+        "default": choose_default_sheet({s: dims.get(s, (0, 0)) for s in sheets}) or sheets[0]}
+
+
 def _start_screen() -> None:
     page_header("AI Analyst", "Hi! I'm your data analyst.",
                 "Upload a spreadsheet, tell me what you want to understand, and I'll build the dashboard with you.")
@@ -206,36 +222,37 @@ def _start_screen() -> None:
         if st.session_state.get("analyst_upload_id") != up.file_id:
             try:
                 ext = validate_upload(up.name, up.size)
-                data = up.getvalue()
-                sheets = list_sheets(data, ext)
-                meta = state.get_storage().save_upload(up.name, data, ext)
-                dims = sheet_dimensions(data, ext)
+                _stage_upload(up.name, up.getvalue(), ext)
             except (DataLoadError, StorageError) as exc:
                 st.error(str(exc), icon=":material/error:")
                 return
             st.session_state["analyst_upload_id"] = up.file_id
-            st.session_state["analyst_pending"] = {"dataset_id": meta["id"], "name": meta["original_name"], "size": meta["size"],
-                                                   "sheets": sheets, "default": choose_default_sheet({s: dims.get(s, (0, 0)) for s in sheets}) or sheets[0]}
-        pend = st.session_state.get("analyst_pending")
-        if pend:
-            with card("analyst_pending"):
-                chips([(pend["name"], ""), (human_size(pend["size"]), "")])
-                sheet = pend["sheets"][0]
-                if len(pend["sheets"]) > 1:
-                    sheet = st.selectbox("Which sheet should I look at?", pend["sheets"], index=pend["sheets"].index(pend["default"]))
-                chosen, provider, model = _assistant_picker("start", None)
-                if st.button("Start analysis", type="primary", icon=":material/auto_awesome:", disabled=not chosen):
-                    sess = {"dataset_id": pend["dataset_id"], "sheet": sheet, "header_row": None}
-                    try:
-                        with st.spinner("Reading your data…"):
-                            ctx = _context(sess)
-                    except (DataLoadError, StorageError) as exc:
-                        st.error(str(exc))
-                        return
-                    set_assistant(ctx, provider, model)
-                    st.session_state[SESSION_KEY] = sess
-                    st.session_state.pop("analyst_pending", None)
-                    _run(ctx, event="start")
+    elif SAMPLE_FILE.is_file():
+        if st.button("No file handy? Try a messy sample workbook", icon=":material/science:", key="analyst_sample",
+                     help="Titles, two tables on one sheet, merged headers, a month-per-column report and a sideways "
+                          "table: the kind of layout the app untangles for you."):
+            _stage_upload("extremely_messy_workbook.xlsx", SAMPLE_FILE.read_bytes(), ".xlsx", sample=True)
+    pend = st.session_state.get("analyst_pending")
+    if pend and (up is not None or pend.get("sample")):
+        with card("analyst_pending"):
+            chips([(pend["name"], ""), (human_size(pend["size"]), "")])
+            sheet = pend["sheets"][0]
+            if len(pend["sheets"]) > 1:
+                sheet = st.selectbox("Which sheet should I look at?", pend["sheets"], index=pend["sheets"].index(pend["default"]))
+            sheet = table_picker(pend["dataset_id"], sheet, "analyst")
+            chosen, provider, model = _assistant_picker("start", None)
+            if st.button("Start analysis", type="primary", icon=":material/auto_awesome:", disabled=not chosen or sheet is None):
+                sess = {"dataset_id": pend["dataset_id"], "sheet": sheet, "header_row": None}
+                try:
+                    with st.spinner("Reading your data…"):
+                        ctx = _context(sess)
+                except (DataLoadError, StorageError) as exc:
+                    st.error(str(exc))
+                    return
+                set_assistant(ctx, provider, model)
+                st.session_state[SESSION_KEY] = sess
+                st.session_state.pop("analyst_pending", None)
+                _run(ctx, event="start")
 
     analyses = state.get_storage().list_analyses()[:6]
     if analyses:
@@ -245,6 +262,8 @@ def _start_screen() -> None:
         for i, a in enumerate(analyses):
             with cols[i % 3], card(f"an_{a['dataset_id']}_{i}"):
                 st.markdown(f"**{esc(a['dataset_name'])}**")
+                if a.get("sheet") and "§" in a["sheet"]:
+                    st.caption(esc(display_sheet(a["sheet"])))
                 step = STEP_LABELS[step_index(a["stage"] or "PROFILE")][0]
                 st.caption(f"{a['objective'][:60] or 'No goal yet'} · step: {step} · {str(a['updated_at'])[:10]}")
                 if st.button("Continue", key=f"an_open_{i}", icon=":material/chat:"):
@@ -381,7 +400,7 @@ def _analysis_screen(sess: dict) -> None:
     head, actions = st.columns([4, 1.6], vertical_alignment="bottom")
     with head:
         page_header("AI Analyst", m.dataset_name)
-        chips([(f"Sheet: {m.sheet}", "") if m.sheet and m.sheet != "CSV data" else ("CSV file", ""),
+        chips([(f"Sheet: {display_sheet(m.sheet)}", "") if m.sheet and m.sheet != "CSV data" else ("CSV file", ""),
                (describe_choice(provider, model), "accent"),
                *([(_usage_text(provider, model), "")] if provider and _usage_text(provider, model) else []),
                (f"Goal: {m.objective[:50]}", "") if m.objective else ("Goal not set yet", "warn")])

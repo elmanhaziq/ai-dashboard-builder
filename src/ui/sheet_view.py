@@ -10,7 +10,9 @@ import html
 import pandas as pd
 import streamlit as st
 
-from ..agent.quality import issue_cells
+from ..structure import display_sheet
+from ..agent.ambiguity import column_confidence
+from ..agent.quality import issue_cells, quality_score
 from ..data_profiler import DATE, METRIC, ROLE_LABELS
 from ..formatting import format_value
 from . import buddy
@@ -64,6 +66,22 @@ def _blank(v) -> bool:
     return v is None or (not isinstance(v, str) and bool(pd.isna(v)))
 
 
+def quality(ctx, which: str) -> dict:
+    """Quality score of the original ('orig') or cleaned ('work') data, cached per analysis state."""
+    m = ctx.memory
+    key = (which, m.dataset_id, m.sheet, m.header_row, repr(m.applied_ops) if which == "work" else "")
+    cache = st.session_state.setdefault("_quality", {})
+    if key not in cache:
+        if len(cache) > 20:
+            cache.clear()
+        df, prof = (ctx.original.df, ctx.original_profile) if which == "orig" else ctx.working()
+        cache[key] = quality_score(df, prof)
+    return cache[key]
+
+
+CONF_ICON = {"Confirmed": "✅ Confirmed", "High": "🟢 High", "Medium": "🟡 Medium", "Low": "🔴 Low"}
+
+
 def _fmt(profile, col):
     cp = profile.columns.get(col)
     if cp is not None and cp.role == DATE:
@@ -112,15 +130,18 @@ def _grid(df: pd.DataFrame, profile, active: list[dict], only_problem_rows: bool
     return styler, len(view), total
 
 
-def _structure(df: pd.DataFrame, profile, cells: list[dict]) -> pd.DataFrame:
+def _structure(df: pd.DataFrame, profile, cells: list[dict], m) -> pd.DataFrame:
     letters = _letters(len(df.columns))
+    amb = {a["column"]: a for a in m.ambiguous}
     rows = []
     for i, c in enumerate(df.columns):
         cp = profile.columns.get(c)
         probs = [f"{x['title']} ({x['count']:,})" for x in cells if x["columns"] and c in x["columns"]]
+        level, why = column_confidence(cp, amb, m.interpretations.get(c)) if cp else ("Low", "Not profiled.")
         rows.append({
             "": letters[i], "Column": c,
             "Type": ROLE_LABELS.get(cp.role, cp.role) if cp else "—",
+            "How sure I am": CONF_ICON[level], "Why": why,
             "Filled": f"{100 - cp.missing_pct:.0f}%" if cp else "—",
             "Different values": f"{cp.unique:,}" if cp else "—",
             "Most common": ", ".join(str(v) for v, _ in (cp.top_values or [])[:3]) if cp else "",
@@ -165,8 +186,18 @@ def render_sheet(ctx, review: bool) -> None:
     with st.expander(label, expanded=review, icon=":material/grid_on:"):
         st.html(_CSS)
         st.html(f'<div class="xl-ribbon"><span class="xl-icon">X</span>{html.escape(m.dataset_name)}'
-                f'{" · " + html.escape(m.sheet) if m.sheet and m.sheet != "CSV data" else ""}'
+                f'{" · " + html.escape(display_sheet(m.sheet)) if m.sheet and m.sheet != "CSV data" else ""}'
                 f'<span class="xl-meta">{len(df):,} rows × {len(df.columns)} columns</span></div>')
+        qb = quality(ctx, "orig")
+        qa = quality(ctx, "work") if m.applied_ops else None
+        q = qa or qb
+        cols = st.columns(5)
+        cols[0].metric("Data quality", f"{q['score']}/100 · {q['grade']}",
+                       delta=f"{qa['score'] - qb['score']:+d} after clean-up" if qa else None,
+                       help="Filled cells 40%, unique rows 25%, consistently written labels 25%, named columns 10%.")
+        for col, (name, value) in zip(cols[1:], q["parts"].items()):
+            before = qb["parts"][name]
+            col.metric(name, f"{value:.0f}%", delta=f"{value - before:+.0f} pts" if qa and value != before else None)
         tabs = st.tabs(["Sheet", "Column structure"] + (["After clean-up"] if m.applied_ops else []))
         with tabs[0]:
             focus = None
@@ -191,9 +222,10 @@ def render_sheet(ctx, review: bool) -> None:
             st.caption(f"Showing {shown:,} row(s){more}. Your original file is never changed."
                        + (" Columns marked ⚠ have something to check." if active else ""))
         with tabs[1]:
-            st.dataframe(_structure(df, profile, cells), hide_index=True, width="stretch")
+            st.dataframe(_structure(df, profile, cells, m), hide_index=True, width="stretch")
             st.caption("Type = how I'll use the column: Measures are added up or averaged, Categories are used to "
-                       "group, Dates make trends, Identifiers are labels and aren't added up.")
+                       "group, Dates make trends, Identifiers are labels and aren't added up. 'How sure I am' turns "
+                       "✅ Confirmed when you answer my question about a column.")
         if m.applied_ops:
             with tabs[2]:
                 work, wprofile = ctx.working()

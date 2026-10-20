@@ -207,7 +207,12 @@ def _read_csv_raw(data: bytes, warnings: list[str]) -> pd.DataFrame:
 
 
 def read_raw(source: Source, ext: str, sheet: str | None = None) -> tuple[pd.DataFrame, str, list[str]]:
-    """Read a sheet with no header interpretation. Returns (raw_df, sheet_name, warnings)."""
+    """Read a sheet with no header interpretation. Returns (raw_df, sheet_name, warnings).
+
+    ``sheet`` may be a table reference made by ``structure.make_ref``; the whole worksheet is returned either way."""
+    from .structure import split_ref
+
+    sheet = split_ref(sheet)[0]
     data = _as_bytes(source)
     fmt = _detect_format(data, ext.lower())
     warnings: list[str] = []
@@ -440,12 +445,24 @@ def _coerce_column(s: pd.Series, name: str, result: LoadResult) -> pd.Series:
 # --------------------------------------------------------------------------- main entry point
 
 def load_dataset(source: Source, ext: str, sheet: str | None = None, header_row: int | None = None) -> LoadResult:
-    """Load one sheet into a cleaned DataFrame with warnings describing every assumption."""
+    """Load one sheet into a cleaned DataFrame with warnings describing every assumption.
+
+    When ``sheet`` is a table reference (see ``structure``), that table is cut out, flipped, given a one-row header and
+    unpivoted as recorded in the reference first; the cleaning below then works on it exactly as on a plain sheet."""
+    from .structure import reconstruct, split_ref
+
     raw, sheet_name, warnings = read_raw(source, ext, sheet)
     result = LoadResult(df=pd.DataFrame(), sheet=sheet_name, header_row=-1, warnings=warnings, raw_shape=raw.shape)
 
     if raw.empty or raw.map(_is_blank).all().all():
         raise DataLoadError(f"The worksheet '{sheet_name}' is empty. Choose another sheet or check the file.")
+
+    _, spec = split_ref(sheet)
+    if spec:
+        raw, notes = reconstruct(raw, spec)
+        result.warnings.extend(notes)
+        result.sheet = sheet
+        header_row = 0 if spec["header_rows"] else -1
 
     h = detect_header_row(raw) if header_row is None else header_row
     if h >= len(raw):

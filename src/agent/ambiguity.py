@@ -161,3 +161,21 @@ def find_ambiguous(profile: DatasetProfile, currency_columns: list[str] | None =
     cur = set(currency_columns or [])
     found = [r for r in (assess_column(cp, cp.name in cur) for cp in profile.columns.values()) if r]
     return sorted(found, key=lambda r: (-r["priority"], list(profile.columns).index(r["column"])))
+
+
+def column_confidence(cp, ambiguous: dict, interpretation: dict | None) -> tuple[str, str]:
+    """How sure the app is about what a column means: (level, reason). Levels: Confirmed, High, Medium, Low."""
+    it = interpretation or {}
+    if it.get("source") == "user" or it.get("confirmed"):
+        return "Confirmed", "You told me what this column means."
+    if it:
+        return "Medium", "Interpreted by the assistant from the name and values; not confirmed by you."
+    rec = ambiguous.get(cp.name)
+    if rec:
+        return ("Low" if rec.get("blocking") else "Medium"), (rec.get("reasons") or ["The name is unclear."])[0]
+    if cp.role in (EMPTY,):
+        return "Low", "The column is empty."
+    _, unknown = expand(cp.name)
+    if unknown:
+        return "Medium", "Part of the name isn't a word I know, but it doesn't affect totals."
+    return "High", "The name and the values agree."
