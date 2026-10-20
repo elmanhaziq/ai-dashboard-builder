@@ -15,7 +15,8 @@ uploads/*
 !uploads/.gitkeep
 saved_dashboards/*
 !saved_dashboards/.gitkeep
-sample_data/
+sample_data/*
+!sample_data/extremely_messy_workbook.xlsx
 
 # OS / editor
 .DS_Store
