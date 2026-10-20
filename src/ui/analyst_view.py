@@ -18,6 +18,8 @@ from ..agent.workflow import STEP_LABELS, Stage, step_index
 from ..data_loader import DataLoadError, choose_default_sheet, list_sheets, sheet_dimensions, validate_upload
 from ..storage import StorageError
 from . import state
+from . import buddy
+from .sheet_view import render_sheet
 from .theme import card, chips, empty_state, esc, human_size, page_header
 
 SESSION_KEY = "analysis"
@@ -124,7 +126,33 @@ def _context(sess: dict) -> AgentContext:
     return ctx
 
 
+def _buddy_state(m) -> tuple[str, str]:
+    """What the floating buddy does at each step of the analysis."""
+    stage = Stage(m.stage)
+    if m.pending():
+        return "aha", "I have a question for you — see the panel on the right."
+    if stage in (Stage.CLEANING_REVIEW, Stage.CLEANING_APPROVAL):
+        return "present", "I coloured what needs cleaning in the spreadsheet view. Take a look!"
+    if stage in (Stage.DASHBOARD_PLANNING, Stage.PLAN_VALIDATION, Stage.DASHBOARD_GENERATION):
+        return "think", "Planning your dashboard…"
+    if stage == Stage.READY:
+        return "celebrate", "Your dashboard is ready! Ask me anything."
+    if stage == Stage.CLARIFICATION:
+        return "think", "Making sure I understand your columns…"
+    return "idle", "Tell me what you'd like to find out!"
+
+
+def _buddy_think() -> None:
+    slot = st.session_state.get("_analyst_buddy_slot")
+    if slot is not None:
+        try:
+            buddy.floating(slot, "think", "Hmm, let me think…")
+        except Exception:  # noqa: BLE001 - the slot belongs to an earlier run
+            pass
+
+
 def _run(ctx: AgentContext, text: str | None = None, event: str | None = None) -> None:
+    _buddy_think()
     provider, model = _choice(ctx)
     llm = _llm(provider, model) if provider and not (_ai_locked() and not PRESETS[provider]["local"]) else None
     with st.spinner("Thinking…" if llm else "Working on it…"):
@@ -170,6 +198,7 @@ def _start_screen() -> None:
                 "Upload a spreadsheet, tell me what you want to understand, and I'll build the dashboard with you.")
     status = provider_status()
     _ai_notice(status)
+    buddy.floating(st.empty(), "idle", "Hi! Upload a spreadsheet and I'll help you make sense of it.")
     st.write("")
     up = st.file_uploader("Upload an Excel or CSV file", type=["xlsx", "xls", "csv"], key="analyst_upload",
                           help=f"Up to {config.MAX_UPLOAD_MB} MB.")
@@ -230,7 +259,7 @@ def _render_message(msg: dict) -> None:
     if msg.get("kind") == "event":
         st.caption(msg["text"])
         return
-    with st.chat_message(role, avatar=":material/person:" if role == "user" else ":material/insights:"):
+    with st.chat_message(role, avatar=":material/person:" if role == "user" else buddy.AVATAR):
         st.markdown(msg["text"])
         data = msg.get("data") or {}
         if msg.get("kind") == "answer" and data.get("table"):
@@ -372,8 +401,12 @@ def _analysis_screen(sess: dict) -> None:
             st.session_state.pop("analyst_upload_id", None)
             st.rerun()
     _stepper(m.stage)
+    slot = st.empty()
+    st.session_state["_analyst_buddy_slot"] = slot
+    buddy.floating(slot, *_buddy_state(m))
     if not m.conversation:
         _run(ctx, event="start")
+    render_sheet(ctx, review=Stage(m.stage) in (Stage.CLEANING_REVIEW, Stage.CLEANING_APPROVAL) and bool(m.cleaning_issues))
 
     chat, side = st.columns([1.55, 1], gap="large")
     with chat:
@@ -393,6 +426,7 @@ def _analysis_screen(sess: dict) -> None:
 
 
 def analyst_page() -> None:
+    buddy.install()
     sess = st.session_state.get(SESSION_KEY)
     if sess:
         _analysis_screen(sess)

@@ -16,14 +16,14 @@ from ..agent.llm import PRESETS, describe_choice, provider_status
 from ..chart_renderer import _style
 from ..data_profiler import DatasetProfile
 from .. import themes
-from . import state
+from . import buddy, state
 from .analyst_view import _ai_locked, _assistant_picker, _llm, _usage_text
 from .theme import esc
 
 SPRITE = 116  # px per frame on screen
 FRAMES = {"idle": 5, "think": 4, "aha": 1, "present": 3, "celebrate": 2}
 SPEED = {"idle": 2.4, "think": 1.1, "aha": 1, "present": 1.8, "celebrate": 0.7}
-BUBBLES = {"idle": "Hi! Click me to chat about your data", "think": "Hmm, let me think…", "aha": "Aha! I found something",
+BUBBLES = {"idle": "Hi! Click me to chat, or drag me around", "think": "Hmm, let me think…", "aha": "Aha! I found something",
            "present": "I have ideas for you!", "celebrate": "Done! Looks great"}
 AVATAR = "static/buddy/avatar.png"
 QUICK = [("Give me ideas", ":material/lightbulb:", "Look at my dashboard and data and give me 3 ideas to make it more useful."),
@@ -210,6 +210,7 @@ def render_copilot(cfg: dict, filtered: pd.DataFrame, profile: DatasetProfile, t
     open_ = bool(st.session_state.get("dash_open"))
     provider, model = _choice()
 
+    buddy.install()  # lets the user drag Dash anywhere (a drag doesn't open the chat)
     st.markdown(_BASE_CSS % {"s": SPRITE, "frames": _frames_css()}, unsafe_allow_html=True)
     mood_slot = st.empty()
     mood_slot.markdown(_mood_css(chat.get("mood", "idle"), open_), unsafe_allow_html=True)

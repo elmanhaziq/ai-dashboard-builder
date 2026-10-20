@@ -271,10 +271,35 @@ as usual, and **Back to AI analyst** returns to the conversation.
 spreadsheet, without changing your library. `tests/synthetic.py: malaysian_sales_rows()` is a deliberately messy
 test report with cryptic codes, RM text, mixed date formats, inconsistent labels, duplicates and subtotal rows.
 
+## The robot buddy and the spreadsheet view
+
+The same robot lives on the **AI Analyst** page. You can **drag it anywhere** (it remembers the spot in your browser)
+and **poke it**: it squishes, throws stars and complains. Its pose follows the analysis: waving while you start,
+"aha!" when it has a question for you, presenting during clean-up, thinking while it works or plans, and celebrating
+when the dashboard is ready. Answers in the chat use the robot as their avatar.
+
+**Spreadsheet view** (on the AI Analyst page) shows the uploaded data the way Excel would: column letters (A, B, C…),
+row numbers, and a green title bar with the file name. During the clean-up step it opens by itself and colours the
+cells behind each suggestion:
+
+| Colour | Meaning |
+|---|---|
+| Yellow | Missing value |
+| Purple | The same value written differently (e.g. "central" / "CENTRAL") |
+| Orange | Exact duplicate row |
+| Peach | Repeated ID with different details |
+| Red | Unusual number (kept, for information) |
+
+A small robot next to the grid explains the colours. Choose one suggestion in the list to see only its rows, together
+with the robot's explanation and recommendation. Columns marked ⚠ have something to check. The **Column structure**
+tab lists each column's type, how full it is, its number of different values, its most common values and its
+problems. After you confirm, the **After clean-up** tab shows the version the dashboard uses. The grid shows up to
+400 rows at a time, and the original file is never changed.
+
 ## Dash, the dashboard assistant
 
 Every dashboard has **Dash**, an animated robot in the bottom-right corner (it wanders along the bottom of the page on
-wide screens). Click it to open a chat about the dashboard you're looking at:
+wide screens; drag it to park it somewhere else). Click it to open a chat about the dashboard you're looking at:
 
 | You can… | Example | What happens |
 |---|---|---|

@@ -150,6 +150,39 @@ def detect_issues(df: pd.DataFrame, profile: DatasetProfile, load_warnings: list
     return issues
 
 
+def issue_cells(df: pd.DataFrame, issues: list[dict]) -> list[dict]:
+    """Where each issue is in the data, for highlighting: rows (bool Series) and columns (None = whole row).
+
+    Only issues that point at specific cells are returned (not file-level notes such as 'Total rows')."""
+    out = []
+    for issue in issues:
+        kind, col = issue["kind"], issue.get("column")
+        if col is not None and col not in df.columns:
+            continue
+        rows, cols = None, [col] if col else None
+        if kind == "missing":
+            rows = df[col].isna()
+        elif kind == "duplicates":
+            rows = df.duplicated(keep="first")
+        elif kind == "possible_duplicates":
+            rows = df[col].duplicated(keep=False) & df[col].notna() & ~df.duplicated(keep=False)
+        elif kind == "inconsistent_labels":
+            mapping = (issue.get("recommended") or {}).get("op", {}).get("params", {}).get("mapping") or {}
+            s = df[col]
+            rows = s.notna() & s.map(lambda v: isinstance(v, str) and v in mapping and mapping[v] != v)
+            rows = rows.astype(bool)
+        elif kind == "outliers":
+            v = pd.to_numeric(df[col], errors="coerce")
+            q1, q3 = v.quantile(.25), v.quantile(.75)
+            iqr = q3 - q1
+            rows = ((v < q1 - 1.5 * iqr) | (v > q3 + 1.5 * iqr)) if iqr > 0 else pd.Series(False, index=df.index)
+        if rows is None or not bool(rows.any()):
+            continue
+        out.append({"id": issue["id"], "kind": kind, "title": issue["title"], "columns": cols, "rows": rows.fillna(False),
+                    "count": int(rows.sum()), "status": issue.get("status")})
+    return out
+
+
 def chosen_ops(issues: list[dict]) -> list[dict]:
     """Operations the user approved, in a safe order (labels → fills → exclusions → duplicates)."""
     rank = {"normalize_text": 0, "fill_unknown": 1, "fill_median": 1, "fill_mean": 1, "exclude_missing": 2,
@@ -161,4 +194,4 @@ def chosen_ops(issues: list[dict]) -> list[dict]:
     return sorted(ops, key=lambda o: rank.get(o["op"], 9))
 
 
-__all__ = ["detect_issues", "chosen_ops", "np"]
+__all__ = ["detect_issues", "chosen_ops", "issue_cells", "np"]
